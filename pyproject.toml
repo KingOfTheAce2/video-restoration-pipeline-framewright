@@ -1,0 +1,92 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "framewright"
+version = "1.2.0"
+description = "AI-powered video restoration and enhancement pipeline with web UI"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+    {name = "FrameWright Team"}
+]
+keywords = ["video", "restoration", "ai", "enhancement", "upscaling", "real-esrgan"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Multimedia :: Video :: Conversion",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "yt-dlp>=2023.0.0",
+    "tqdm>=4.65.0",
+    "click>=8.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "pytest-mock>=3.10.0",
+    "black>=23.0.0",
+    "flake8>=6.0.0",
+    "mypy>=1.0.0",
+]
+ui = [
+    "gradio>=4.0.0",
+]
+full = [
+    "gradio>=4.0.0",
+    "numpy>=1.24.0",
+    "pillow>=9.0.0",
+    "scipy>=1.10.0",
+    "psutil>=5.9.0",
+]
+
+[project.scripts]
+framewright = "framewright.cli:main"
+framewright-ui = "framewright.cli:launch_ui"
+framewright-check = "framewright.cli:check_hardware"
+
+[project.urls]
+Homepage = "https://github.com/framewright/framewright"
+Documentation = "https://github.com/framewright/framewright#readme"
+Repository = "https://github.com/framewright/framewright"
+Issues = "https://github.com/framewright/framewright/issues"
+
+[tool.setuptools]
+packages = ["framewright", "framewright.processors", "framewright.utils"]
+package-dir = {"" = "src"}
+
+[tool.setuptools.package-data]
+framewright = ["py.typed"]
+
+[tool.black]
+line-length = 100
+target-version = ['py39', 'py310', 'py311', 'py312']
+include = '\.pyi?$'
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra -q --strict-markers"
+testpaths = ["tests"]
+pythonpath = ["src"]

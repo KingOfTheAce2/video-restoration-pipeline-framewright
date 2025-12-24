@@ -1,0 +1,15 @@
+# FrameWright Video Restoration Pipeline
+# Core dependencies for production use
+
+# Video downloading
+yt-dlp>=2023.0.0
+
+# Progress bars and CLI utilities
+tqdm>=4.65.0
+click>=8.1.0
+
+# Note: FFmpeg and ffprobe must be installed separately on the system
+# Installation instructions:
+# - Ubuntu/Debian: sudo apt-get install ffmpeg
+# - macOS: brew install ffmpeg
+# - Windows: Download from https://ffmpeg.org/download.html

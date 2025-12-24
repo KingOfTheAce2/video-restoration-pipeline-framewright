@@ -1,0 +1,1 @@
+"""FrameWright test suite."""
