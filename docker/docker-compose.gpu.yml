@@ -1,0 +1,137 @@
+# FrameWright GPU Override Configuration
+#
+# This file extends docker-compose.yml with GPU-specific settings.
+# Use with: docker-compose -f docker-compose.yml -f docker-compose.gpu.yml up
+#
+# Requirements:
+#   - NVIDIA GPU with CUDA 12.1+ support
+#   - nvidia-container-toolkit installed
+#   - Docker configured with nvidia runtime
+#
+# GPU Setup Instructions:
+#   1. Install NVIDIA drivers: https://docs.nvidia.com/datacenter/tesla/tesla-installation-notes/
+#   2. Install nvidia-container-toolkit:
+#      curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+#      curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
+#        sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
+#        sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+#      sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
+#      sudo nvidia-ctk runtime configure --runtime=docker
+#      sudo systemctl restart docker
+#   3. Verify: docker run --rm --gpus all nvidia/cuda:12.1-base-ubuntu22.04 nvidia-smi
+
+services:
+  # ============================================================
+  # GPU Processing Service - Full GPU Configuration
+  # ============================================================
+  framewright-gpu:
+    # Shared memory size for PyTorch DataLoader with multiple workers
+    # Increase if you get "RuntimeError: DataLoader worker exited unexpectedly"
+    shm_size: '8gb'
+
+    # NVIDIA runtime (alternative to deploy section for older Docker)
+    # runtime: nvidia
+
+    # GPU device reservation
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              # Options: "all", or specific count: 1, 2, etc.
+              count: ${GPU_COUNT:-all}
+              capabilities: [gpu, compute, utility, video]
+
+    # Additional GPU-specific environment variables
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-all}
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      # Optimize for memory-constrained GPUs
+      - CUDA_LAUNCH_BLOCKING=${CUDA_LAUNCH_BLOCKING:-0}
+      # Enable TensorFloat-32 for faster computation on Ampere+ GPUs
+      - NVIDIA_TF32_OVERRIDE=${NVIDIA_TF32_OVERRIDE:-1}
+
+  # ============================================================
+  # GPU-Enabled Web UI - Full GPU Configuration
+  # ============================================================
+  framewright-ui-gpu:
+    shm_size: '8gb'
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${GPU_COUNT:-all}
+              capabilities: [gpu, compute, utility, video]
+
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-all}
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+    healthcheck:
+      test: ["CMD", "python3.11", "-c", "import torch; assert torch.cuda.is_available()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ============================================================
+  # GPU Watch Service (for continuous batch processing)
+  # ============================================================
+  framewright-watch-gpu:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.gpu
+    image: framewright:gpu
+    container_name: framewright-watch-gpu
+    shm_size: '8gb'
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${GPU_COUNT:-all}
+              capabilities: [gpu, compute, utility, video]
+
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-all}
+      - FRAMEWRIGHT_DEVICE=cuda
+      - FRAMEWRIGHT_OUTPUT_DIR=/app/output
+      - FRAMEWRIGHT_PRESET=${PRESET:-quality}
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+    volumes:
+      - ${WATCH_DIR:-./watch}:/app/watch:ro
+      - ${OUTPUT_DIR:-./output}:/app/output
+      - ${PROCESSED_DIR:-./processed}:/app/processed
+      - ${MODEL_DIR:-./models}:/app/models
+      - framewright-cache:/root/.cache/framewright
+
+    working_dir: /app
+    command: >
+      watch
+      --input-dir /app/watch
+      --output-dir /app/output
+      --processed-dir /app/processed
+      --preset ${PRESET:-quality}
+      --interval ${WATCH_INTERVAL:-60}
+    restart: unless-stopped
+
+# ============================================================
+# Multi-GPU Configuration Example
+# ============================================================
+# To use specific GPUs, set environment variables:
+#   GPU_COUNT=2                    # Use 2 GPUs
+#   NVIDIA_VISIBLE_DEVICES=0,1     # Use GPUs 0 and 1
+#   CUDA_VISIBLE_DEVICES=0,1       # Alternative GPU selection
+#
+# For memory-constrained setups:
+#   docker-compose -f docker-compose.yml -f docker-compose.gpu.yml up framewright-gpu
+#   with: GPU_COUNT=1 NVIDIA_VISIBLE_DEVICES=0

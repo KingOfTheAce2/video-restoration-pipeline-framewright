@@ -1,27 +1,41 @@
 # FrameWright - Video Restoration Pipeline
 
-A modular, frame-accurate video restoration pipeline for recovering vintage and degraded footage. Optimized for **100-year-old film fragments**, combining AI upscaling, audio restoration, and optional frame interpolation with a craft-first, reproducible workflow.
+A modular, frame-accurate video restoration pipeline for recovering vintage and degraded footage. Optimized for **100-year-old film fragments** and **YouTube source videos**, combining AI upscaling, colorization, watermark removal, and frame interpolation with an intuitive, reproducible workflow.
 
-## ✨ What's New in v1.3.0
+**Status:** v1.3.0 (Production Ready)
 
-- 🤖 **Auto-Enhancement** - Fully automated restoration with content detection
-- 🔍 **Video Analysis** - Pre-scan for optimal settings recommendations
-- 👤 **Face Restoration** - GFPGAN/CodeFormer integration for portrait enhancement
-- 🩹 **Defect Repair** - Automatic scratch, dust, and grain removal
-- 🎬 **RIFE Integration** - Frame interpolation with auto-FPS detection
-- 📺 **Preview Mode** - Inspect results before final assembly
-
-### Previous Updates (v1.2.0)
-- 🖥️ **Web UI** - User-friendly browser interface for non-coders
-- 🔧 **Hardware Check** - Verify your system can run the pipeline
-- 📊 **Progress Tracking** - ETA calculation and detailed metrics
-- 🎵 **Audio Analysis** - Silence detection and quality analysis
-- 💾 **Checkpointing** - Resume interrupted processing
-- 🛡️ **Error Recovery** - Automatic retry with backoff
+[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
 ---
 
-## 🚀 Quick Start
+## Features Overview
+
+| Feature | Status | Description |
+|---------|--------|-------------|
+| AI Upscaling | ✅ Ready | Real-ESRGAN 2x/4x enhancement |
+| Frame Interpolation | ✅ Ready | RIFE smooth motion interpolation |
+| Face Restoration | ✅ Ready | GFPGAN/CodeFormer integration |
+| Defect Repair | ✅ Ready | Scratch, dust, grain removal |
+| Colorization | ✅ Ready | DeOldify/DDColor B&W colorization |
+| Watermark Removal | ✅ Ready | LaMA inpainting |
+| Subtitle Removal | ✅ Ready | OCR-based burnt-in subtitle detection & removal |
+| Video Stabilization | ✅ Ready | FFmpeg vidstab & OpenCV integration |
+| Scene Detection | ✅ Ready | Automatic scene boundary detection |
+| Audio Enhancement | ✅ Ready | Noise reduction & clarity improvement |
+| Audio Sync | ✅ Ready | AI-powered audio-video synchronization |
+| HDR Conversion | ✅ Ready | SDR/HDR format conversion |
+| Multi-GPU Support | ✅ Ready | Distribute processing across GPUs |
+| Cloud Processing | ✅ Ready | RunPod & Vast.ai integration |
+| Web UI | ✅ Ready | Gradio browser interface |
+| YouTube Download | ✅ Ready | yt-dlp integration |
+| Batch Processing | ✅ Ready | Process multiple videos with queue |
+| Streaming Mode | ✅ Ready | Real-time progressive processing |
+
+---
+
+## Quick Start
 
 ### For Non-Coders: Web UI
 
@@ -37,87 +51,294 @@ framewright-ui
 # Opens in your browser at http://localhost:7860
 ```
 
-**Features of the Web UI:**
-- 📁 Upload videos or paste YouTube URLs
-- ⚙️ Simple settings with sensible defaults
-- 📊 Real-time progress tracking
-- 🔧 Hardware compatibility check built-in
-
 ### Check Your Hardware First
 
-Before processing, verify your system is compatible:
-
 ```bash
-# Quick hardware check
 framewright-check
-```
-
-This shows:
-- GPU detection and VRAM
-- RAM availability
-- Disk space
-- Missing dependencies
-- Recommendations for your setup
-
-**Example output:**
-```
-============================================================
-  FrameWright Hardware Compatibility Report
-============================================================
-
-📊 SYSTEM INFORMATION
-────────────────────────────────────────
-  OS:        Linux 5.15.0
-  Python:    3.11.0
-  CPU:       AMD Ryzen 9 5900X
-  Cores:     24
-  RAM:       64.0 GB total, 58.2 GB available
-
-🎮 GPU INFORMATION
-────────────────────────────────────────
-  GPU:       NVIDIA GeForce RTX 3080
-  VRAM:      10240 MB total, 9500 MB free
-  CUDA:      Yes
-  Max Res:   4K (3840x2160)
-
-💡 RECOMMENDATIONS
-────────────────────────────────────────
-  • Your system is ready for 4K processing!
-
-────────────────────────────────────────
-  Overall Status: ✅ READY
-────────────────────────────────────────
 ```
 
 ---
 
-## How It Works
+## UI Settings Guide
 
-The pipeline processes video through discrete stages:
+The Web UI provides intuitive controls organized by category:
+
+### Source Settings
+| Setting | Description |
+|---------|-------------|
+| **Video File** | Upload a local video file |
+| **YouTube URL** | Paste a YouTube URL to download and process |
+| **Output Directory** | Where to save frames and final video (default: `./output/`) |
+
+### Enhancement Options
+
+| Setting | Default | Options |
+|---------|---------|---------|
+| **Scale Factor** | 4x | 2x, 4x |
+| **Model** | Auto-detect | See [Model Selection](#model-selection-anime-vs-real-life) |
+| **Enable Colorization** | ☐ Off | Colorize B&W footage with DeOldify/DDColor |
+| **Enable Watermark Removal** | ☐ Off | Remove logos/watermarks with LaMA inpainting |
+| **Enable Subtitle Removal** | ☐ Off | Remove burnt-in subtitles with OCR detection |
+| **Auto-Enhance** | ☑ On | Automatic defect repair and face restoration |
+
+### Frame Interpolation (Smoothing)
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| **Enable RIFE** | ☐ Off | Enable AI frame interpolation |
+| **Target FPS** | Auto | Target frame rate (24, 30, 48, 60) |
+| **Smoothness** | Medium | Low/Medium/High quality |
+| **RIFE Model** | rife-v4.6 | Model version for interpolation |
+
+### Output Settings
+
+| Setting | Default | Options |
+|---------|---------|---------|
+| **Format** | MKV | MKV, MP4, WebM, AVI, MOV |
+| **Quality (CRF)** | 18 | 0-51 (lower = better quality) |
+| **Generate Report** | ☐ Off | Create improvements.md with details |
+
+---
+
+## Colorization (B&W to Color)
+
+FrameWright can automatically colorize black-and-white footage using AI models.
+
+### Available Models
+
+| Model | Best For | Quality | Speed |
+|-------|----------|---------|-------|
+| `ddcolor` | **General purpose** - Most footage (default) | High | Medium |
+| `deoldify` | Artistic, vintage look | Medium | Fast |
+
+### CLI Usage
+
+```bash
+# Enable colorization with DDColor (recommended)
+framewright restore --input bw_film.mp4 --colorize --output color_film.mp4
+
+# Use DeOldify for artistic look
+framewright restore --input bw_film.mp4 --colorize --colorize-model deoldify --output color_film.mp4
+```
+
+---
+
+## Watermark Removal
+
+Remove logos, watermarks, and overlay graphics using AI inpainting.
+
+### Features
+
+- **Auto-detection**: Automatically find common watermark positions
+- **Manual mask**: Provide a custom mask image for precise control
+- **Region specification**: Define exact coordinates for watermark areas
+- **LaMA inpainting**: State-of-the-art inpainting model for seamless removal
+
+### CLI Usage
+
+```bash
+# Auto-detect and remove watermarks
+framewright restore --input video.mp4 --remove-watermark --watermark-auto-detect --output clean.mp4
+
+# Remove watermark using a mask image (white = watermark area)
+framewright restore --input video.mp4 --remove-watermark --watermark-mask mask.png --output clean.mp4
+
+# Specify watermark region manually (x,y,width,height)
+framewright restore --input video.mp4 --remove-watermark --watermark-region 1700,50,200,80 --output clean.mp4
+```
+
+---
+
+## Burnt-in Subtitle Removal
+
+Remove hard-coded (burnt-in) subtitles that are permanently rendered into video frames.
+
+### Features
+
+- **Multi-engine OCR**: EasyOCR, Tesseract, and PaddleOCR support
+- **Configurable regions**: Bottom-third (default), top-quarter, full-frame scan
+- **Multi-language support**: English, Chinese, Japanese, Korean, and more
+- **LaMA inpainting**: Seamless text removal without artifacts
+- **Temporal smoothing**: Consistent removal across frames
+
+### OCR Engines
+
+| Engine | Languages | GPU | Quality |
+|--------|-----------|-----|---------|
+| `easyocr` | 80+ languages | ✅ GPU | High (default) |
+| `paddleocr` | Asian languages | ✅ GPU | High |
+| `tesseract` | Latin scripts | ❌ CPU | Medium |
+| `auto` | Auto-detect best | - | - |
+
+### CLI Usage
+
+```bash
+# Remove burnt-in subtitles (auto-detect OCR engine)
+framewright restore --input movie.mp4 --remove-subtitles --output clean.mp4
+
+# Specify OCR engine and languages
+framewright restore --input movie.mp4 --remove-subtitles \
+    --subtitle-ocr easyocr \
+    --subtitle-languages "en,zh" \
+    --output clean.mp4
+
+# Scan top of frame (for Chinese/Japanese subtitles)
+framewright restore --input anime.mp4 --remove-subtitles \
+    --subtitle-region top_quarter \
+    --subtitle-languages "ja,zh" \
+    --output clean.mp4
+```
+
+### Subtitle Regions
+
+| Region | Description | Use Case |
+|--------|-------------|----------|
+| `bottom_third` | Bottom 33% of frame (default) | Most Western subtitles |
+| `bottom_quarter` | Bottom 25% of frame | Smaller subtitle areas |
+| `top_quarter` | Top 25% of frame | Chinese/Japanese films |
+| `full_frame` | Entire frame | Unknown subtitle position |
+
+---
+
+## Model Selection: Anime vs Real-Life
+
+Choose the right model for your content:
+
+### For Real-Life Footage (Recommended)
+
+| Model | Best For | Speed |
+|-------|----------|-------|
+| `realesrgan-x4plus` | **General purpose** - old films, photographs | Medium |
+| `realesrnet-x4plus` | Fast processing, slightly lower quality | Fast |
+| `realesrgan-x4plus` + GFPGAN | Footage with faces | Medium |
+
+### For Anime/Animation
+
+| Model | Best For | Speed |
+|-------|----------|-------|
+| `realesrgan-x4plus-anime` | **Anime/cartoon upscaling** | Medium |
+| `realesr-animevideov3` | **Anime video optimized** - best for animation | Medium |
+
+### Model Download Location
+
+Models are automatically downloaded to:
+```
+~/.framewright/models/
+├── realesrgan/
+│   ├── realesrgan-x4plus.pth
+│   ├── realesrgan-x4plus-anime.pth
+│   └── realesr-animevideov3.pth
+├── gfpgan/
+│   └── GFPGANv1.4.pth
+├── codeformer/
+│   └── codeformer.pth
+└── rife/
+    └── rife-v4.6/
+```
+
+**Custom location:**
+```bash
+framewright restore --input video.mp4 --model-dir /path/to/models/
+```
+
+---
+
+## Output Directories
+
+### Default Structure
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                        FRAMEWRIGHT PIPELINE                                  │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐              │
-│  │ DOWNLOAD │ -> │ ANALYZE  │ -> │ EXTRACT  │ -> │ ENHANCE  │              │
-│  │ (yt-dlp) │    │ (Auto)   │    │ (FFmpeg) │    │(Real-ESRGAN)            │
-│  └──────────┘    └──────────┘    └──────────┘    └──────────┘              │
-│       │              │                │               │                     │
-│       v              v                v               v                     │
-│   source.mkv    content type    frames/*.png    enhanced/*.png             │
-│                 degradation     audio.wav                                   │
-│                 recommendations                                             │
-│                                                                              │
-│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐              │
-│  │ DEFECT   │ -> │  FACE    │ -> │ UPSCALE  │ -> │REASSEMBLE│              │
-│  │ REPAIR   │    │ RESTORE  │    │ (RIFE)   │    │ (FFmpeg) │              │
-│  └──────────┘    └──────────┘    └──────────┘    └──────────┘              │
-│  [Auto-Enhance]  [GFPGAN]       [Optional]       -> restored.mkv           │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
+./project_name/
+├── source/              # Downloaded/copied source video
+├── frames/              # Extracted frames (PNG)
+├── enhanced/            # AI-enhanced frames
+├── interpolated/        # RIFE interpolated frames (if enabled)
+├── output/              # Final restored video
+│   └── restored.mkv
+└── logs/                # Processing logs
 ```
+
+### Custom Output Location
+
+```bash
+# Specify output directory
+framewright restore --input video.mp4 --output-dir /path/to/output/
+
+# Or specific output file
+framewright restore --input video.mp4 --output /path/to/restored.mp4
+```
+
+---
+
+## Frame Interpolation (Motion Smoothing)
+
+RIFE frame interpolation creates smooth motion by generating intermediate frames.
+
+### When to Use
+
+| Original FPS | Interpolation | Result | Use Case |
+|--------------|---------------|--------|----------|
+| 12-18 fps | → 24 fps | Subtle smoothing | Silent film era |
+| 24 fps | → 48 fps | Cinematic smooth | Modern films |
+| 24 fps | → 60 fps | Very smooth | Action footage |
+| 30 fps | → 60 fps | Smooth gaming look | General content |
+
+### Smoothness Levels
+
+| Level | Description | Processing Time |
+|-------|-------------|-----------------|
+| **Low** | Fast, may have minor artifacts | 1x |
+| **Medium** | Balanced quality/speed (default) | 2x |
+| **High** | Maximum quality, slowest | 4x |
+
+### CLI Usage
+
+```bash
+# Enable interpolation with target FPS
+framewright restore --input old_film.mp4 \
+    --enable-rife \
+    --target-fps 48 \
+    --rife-model rife-v4.6 \
+    --output smooth_film.mp4
+```
+
+---
+
+## YouTube Source Workflow
+
+FrameWright is optimized for restoring YouTube videos:
+
+### Basic Usage
+
+```bash
+# Web UI: Just paste the URL
+# CLI:
+framewright restore --url "https://youtube.com/watch?v=VIDEO_ID" --output restored.mp4
+```
+
+### Recommended Workflow
+
+1. **Download in highest quality**
+   ```bash
+   framewright restore --url "https://youtube.com/watch?v=..." \
+       --output-dir ./restoration/ \
+       --format mkv
+   ```
+
+2. **Analyze before processing**
+   ```bash
+   framewright analyze --url "https://youtube.com/watch?v=..."
+   ```
+
+3. **Full restoration with all enhancements**
+   ```bash
+   framewright restore --url "https://youtube.com/watch?v=..." \
+       --scale 4 \
+       --auto-enhance \
+       --enable-rife --target-fps 48 \
+       --output-dir ./output/ \
+       --format mkv
+   ```
 
 ---
 
@@ -129,21 +350,19 @@ The pipeline processes video through discrete stages:
 pip install framewright
 ```
 
-### With Web UI
+### With Web UI (Recommended)
 
 ```bash
 pip install framewright[ui]
 ```
 
-### Full Installation (Recommended)
+### Full Installation
 
 ```bash
 pip install framewright[full]
 ```
 
 ### External Dependencies
-
-FrameWright requires these external tools:
 
 ```bash
 # FFmpeg (required)
@@ -153,144 +372,89 @@ sudo apt install ffmpeg
 brew install ffmpeg
 # Windows: download from https://ffmpeg.org/download.html
 
-# Real-ESRGAN (required for enhancement)
-# Download from: https://github.com/xinntao/Real-ESRGAN/releases
-
-# RIFE (optional, for frame interpolation)
-pip install rife-ncnn-vulkan
+# Models are downloaded automatically on first use
 ```
 
 ---
 
-## Usage
+## Command Line Reference
 
-### Web UI (Recommended for Beginners)
+### Basic Commands
 
 ```bash
-# Launch the UI
+# Check hardware compatibility
+framewright-check
+
+# Launch Web UI
 framewright-ui
 
-# With a public shareable link
-framewright-ui --share
-
-# On a different port
-framewright-ui --port 8080
-```
-
-### Command Line
-
-```bash
-# Fully automated restoration (RECOMMENDED for old films)
-framewright restore --input old_film.mp4 --output restored.mp4 --auto-enhance
-
-# Analyze video first to see recommendations
+# Analyze video (shows recommendations)
 framewright analyze --input video.mp4
 
-# Restore from YouTube URL
-framewright restore --url "https://youtube.com/watch?v=VIDEO_ID" --output restored.mp4
-
-# Full options for archival quality
-framewright restore \
-    --url "https://youtube.com/watch?v=VIDEO_ID" \
-    --scale 4 \
-    --quality 15 \
-    --auto-enhance \
-    --enable-rife --target-fps 48 \
-    --output ./restored/
-
-# Auto-enhance with custom sensitivity
-framewright restore --input video.mp4 --output enhanced.mp4 \
-    --auto-enhance --scratch-sensitivity 0.7 --grain-reduction 0.5
-
-# Preview frames before final assembly
-framewright restore --input video.mp4 --output enhanced.mp4 --preview
+# Basic restoration
+framewright restore --input video.mp4 --output restored.mp4
 ```
 
-### Python API
+### Full Options
+
+```bash
+framewright restore \
+    --input old_film.mp4 \          # Local file
+    --url "https://youtube.com/..." \ # OR YouTube URL
+    --output-dir ./output/ \         # Output directory
+    --format mkv \                   # Output format
+    --scale 4 \                      # Upscale factor (2 or 4)
+    --model realesrgan-x4plus \      # Enhancement model
+    --quality 18 \                   # CRF quality (0-51)
+    --auto-enhance \                 # Enable auto-enhancement
+    --enable-rife \                  # Enable frame interpolation
+    --target-fps 48 \                # Target frame rate
+    --rife-model rife-v4.6 \         # RIFE model version
+    --colorize \                     # Enable B&W colorization
+    --colorize-model ddcolor \       # Colorization model
+    --remove-watermark \             # Enable watermark removal
+    --watermark-auto-detect \        # Auto-detect watermark location
+    --remove-subtitles \             # Remove burnt-in subtitles
+    --subtitle-ocr auto \            # OCR engine (auto/easyocr/tesseract)
+    --subtitle-region bottom_third \ # Subtitle region to scan
+    --generate-report                # Create improvements.md
+```
+
+---
+
+## Python API
 
 ```python
-from framewright import VideoRestorer, Config, check_hardware, print_hardware_report
+from framewright import VideoRestorer, Config, check_hardware
 
-# First, check hardware
+# Check hardware first
 report = check_hardware()
-print(print_hardware_report(report))
-
 if report.overall_status != "incompatible":
+
     # Configure
     config = Config(
         project_dir="./my_restoration",
         scale_factor=4,
-        model_name="realesrgan-x4plus",
+        model_name="realesrgan-x4plus",  # or "realesrgan-x4plus-anime" for anime
         crf=18,
-        enable_checkpointing=True,  # Resume if interrupted
+        enable_checkpointing=True,
+        model_dir="~/.framewright/models/",  # Custom model directory
+        output_dir="./output/",              # Custom output directory
     )
 
     # Create restorer
     restorer = VideoRestorer(config)
 
-    # Run full pipeline
+    # Restore from YouTube
     output = restorer.restore_video(
         source="https://youtube.com/watch?v=...",
-        enhance_audio=True,
+        enable_auto_enhance=True,
+        enable_rife=True,
+        target_fps=48,
     )
 
     print(f"Restored video: {output}")
 ```
-
----
-
-## Configuration
-
-### Auto-Enhancement (NEW in v1.3.0)
-
-| Parameter | Values | Default | Description |
-|-----------|--------|---------|-------------|
-| `--auto-enhance` | flag | off | Enable fully automated enhancement pipeline |
-| `--scratch-sensitivity` | `0-1` | `0.5` | Scratch detection sensitivity |
-| `--dust-sensitivity` | `0-1` | `0.5` | Dust/debris detection sensitivity |
-| `--grain-reduction` | `0-1` | `0.3` | Film grain reduction strength |
-| `--no-face-restore` | flag | off | Disable automatic face restoration |
-| `--no-defect-repair` | flag | off | Disable automatic defect repair |
-
-**Auto-enhancement automatically:**
-- Detects content type (faces, animation, landscapes, etc.)
-- Detects degradation (noise, grain, scratches, blur)
-- Applies targeted repairs (scratches, dust, grain removal)
-- Restores faces using GFPGAN/CodeFormer (when faces detected)
-- Adjusts parameters based on content analysis
-
-### RIFE Frame Interpolation
-
-| Parameter | Values | Default | Description |
-|-----------|--------|---------|-------------|
-| `--enable-rife` | flag | off | Enable RIFE frame interpolation |
-| `--target-fps` | number | auto | Target frame rate (e.g., 48, 60) |
-| `--rife-model` | `rife-v2.3`, `rife-v4.0`, `rife-v4.6` | `rife-v4.6` | RIFE model version |
-
-### Video Enhancement
-
-| Parameter | Values | Default | Description |
-|-----------|--------|---------|-------------|
-| `--scale` | `2`, `4` | `4` | Upscaling factor. 4x for heavily degraded footage |
-| `--model` | See below | `realesrgan-x4plus` | AI model for enhancement |
-| `--quality` | `0-51` | `18` | CRF quality (lower = better) |
-| `--preview` | flag | off | Preview frames before final reassembly |
-
-**Available Models:**
-```
-realesrgan-x4plus          # General purpose (recommended for film)
-realesrgan-x4plus-anime    # Anime/animation
-realesr-animevideov3       # Anime video optimized
-realesrnet-x4plus          # Faster, slightly lower quality
-```
-
-### Audio Enhancement
-
-| Parameter | Values | Default | Description |
-|-----------|--------|---------|-------------|
-| `--highpass` | Hz | `80` | Remove rumble below this frequency |
-| `--lowpass` | Hz | `12000` | Remove hiss above this frequency |
-| `--noise-reduction` | dB | `20` | Noise reduction strength |
 
 ---
 
@@ -308,114 +472,34 @@ realesrnet-x4plus          # Faster, slightly lower quality
 - **GPU**: NVIDIA with 4+ GB VRAM
 - **Disk**: 100 GB free (SSD preferred)
 
-### Optimal (4K Processing)
-- **CPU**: 12+ cores
-- **RAM**: 32 GB
-- **GPU**: NVIDIA RTX 3080 or better (8+ GB VRAM)
-- **Disk**: 500 GB free SSD
+### VRAM Guidelines
 
-### GPU VRAM Guidelines
-
-| VRAM | Max Resolution | Notes |
-|------|----------------|-------|
-| 2 GB | 720p | Use tile size 128 |
-| 4 GB | 1080p | Use tile size 256 |
-| 6 GB | 1440p | Use tile size 384 |
+| VRAM | Max Resolution | Tile Size |
+|------|----------------|-----------|
+| 2 GB | 720p | 128 |
+| 4 GB | 1080p | 256 |
+| 6 GB | 1440p | 384 |
 | 8+ GB | 4K | No tiling needed |
 
 ---
 
-## Tips for 100-Year-Old Film
+## Open Source Models Used
 
-### Recommended Settings (Fully Automated)
+All enhancement models are open source:
 
-```bash
-# Best for old film: use --auto-enhance for intelligent processing
-framewright restore \
-    --input old_film.mp4 \
-    --scale 4 \
-    --auto-enhance \
-    --enable-rife --target-fps 48 \
-    --quality 15 \
-    --output restored_film.mkv
-```
-
-### Analyze First, Then Restore
-
-```bash
-# Step 1: Analyze to see what's detected
-framewright analyze --input old_film.mp4
-
-# Output shows:
-#   Content: FACE_PORTRAIT (60% of frames have faces)
-#   Degradation: MODERATE (film grain, light scratches)
-#   Recommended: 4x scale, face restore, defect repair
-#   Suggested command: framewright restore --input old_film.mp4 --output restored.mp4 --scale 4 --auto-enhance
-
-# Step 2: Run with recommended settings
-framewright restore --input old_film.mp4 --output restored.mp4 --auto-enhance
-```
-
-### Common Issues & Solutions
-
-| Issue | Solution |
-|-------|----------|
-| Heavy grain/noise | Use `--auto-enhance` (auto-detects and adjusts) |
-| Flickering brightness | Auto-enhance includes deflicker detection |
-| Missing frames | `--enable-rife --target-fps 48` recreates frames |
-| Scratches/dust | `--auto-enhance` applies targeted defect repair |
-| Blurry faces | Auto-enhance uses GFPGAN when faces detected |
-| Speed too fast/slow | Source FPS auto-detected; use `--target-fps` for RIFE |
-| No audio | Pipeline handles silent films gracefully |
-
-### Frame Rate Reference
-
-| Era | Original FPS | Recommended Target |
-|-----|--------------|-------------------|
-| 1890s-1910s | 14-18 | 24 (subtle smoothing) |
-| 1920s | 18-24 | 24-30 |
-| 1930s+ (sound) | 24 | 48 or 60 |
-
----
-
-## Robustness Features (v1.1+)
-
-FrameWright includes enterprise-grade reliability features:
-
-### Checkpointing & Resume
-```python
-config = Config(
-    enable_checkpointing=True,
-    checkpoint_interval=100,  # Save every 100 frames
-)
-# If interrupted, restart with same config to resume
-```
-
-### Error Recovery
-- Automatic retry with exponential backoff
-- VRAM overflow recovery (reduces tile size)
-- Disk space monitoring
-
-### Quality Validation
-- PSNR/SSIM quality metrics
-- Artifact detection (halos, tiling, banding)
-- Temporal consistency checking
-- Audio silence/clipping detection
-
-### Metrics & Progress
-```python
-from framewright import ProcessingMetrics, ProgressReporter
-
-metrics = ProcessingMetrics(total_frames=1000)
-progress = ProgressReporter(total_frames=1000)
-
-# During processing
-progress.update(frame_num=100, frame_time_ms=50)
-# Output: [████████░░░░░░] 10.0% (100/1000) ETA: 45s | 20.0 fps
-
-# Export metrics
-metrics.export_json(Path("metrics.json"))
-```
+| Component | Model | License | Source |
+|-----------|-------|---------|--------|
+| Upscaling | Real-ESRGAN | BSD-3 | [xinntao/Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) |
+| Interpolation | RIFE | MIT | [megvii-research/ECCV2022-RIFE](https://github.com/megvii-research/ECCV2022-RIFE) |
+| Face Restore | GFPGAN | Apache-2.0 | [TencentARC/GFPGAN](https://github.com/TencentARC/GFPGAN) |
+| Face Restore | CodeFormer | S-Lab License | [sczhou/CodeFormer](https://github.com/sczhou/CodeFormer) |
+| Colorization | DeOldify | MIT | [jantic/DeOldify](https://github.com/jantic/DeOldify) |
+| Colorization | DDColor | Apache-2.0 | [piddnad/DDColor](https://github.com/piddnad/DDColor) |
+| Inpainting | LaMA | Apache-2.0 | [advimman/lama](https://github.com/advimman/lama) |
+| OCR | EasyOCR | Apache-2.0 | [JaidedAI/EasyOCR](https://github.com/JaidedAI/EasyOCR) |
+| Download | yt-dlp | Unlicense | [yt-dlp/yt-dlp](https://github.com/yt-dlp/yt-dlp) |
+| Video Processing | FFmpeg | LGPL/GPL | [ffmpeg.org](https://ffmpeg.org/) |
+| Web UI | Gradio | Apache-2.0 | [gradio-app/gradio](https://github.com/gradio-app/gradio) |
 
 ---
 
@@ -424,134 +508,108 @@ metrics.export_json(Path("metrics.json"))
 ```
 src/framewright/
 ├── __init__.py          # Package exports
-├── config.py            # Configuration
+├── config.py            # Configuration management
 ├── restorer.py          # Core VideoRestorer class
 ├── cli.py               # Command-line interface
 ├── ui.py                # Web UI (Gradio)
-├── hardware.py          # Hardware compatibility
-├── checkpoint.py        # Checkpointing system
-├── errors.py            # Error handling
-├── validators.py        # Quality validation
-├── metrics.py           # Progress & metrics
-├── processors/          # Enhancement processors (NEW)
-│   ├── analyzer.py      # Content & degradation detection
-│   ├── adaptive_enhance.py  # Adaptive enhancement pipeline
-│   ├── defect_repair.py # Scratch, dust, grain removal
-│   ├── face_restore.py  # GFPGAN/CodeFormer integration
-│   ├── interpolation.py # RIFE frame interpolation
-│   └── audio.py         # Audio processing
+├── hardware.py          # Hardware compatibility checks
+├── checkpoint.py        # Checkpointing & resume system
+├── dry_run.py           # Dry run mode for testing
+├── watch.py             # Watch mode for folder monitoring
+├── exceptions.py        # Custom exception classes
+├── processors/
+│   ├── analyzer.py         # Content analysis & detection
+│   ├── adaptive_enhance.py # Adaptive enhancement
+│   ├── defect_repair.py    # Scratch/dust/grain removal
+│   ├── face_restore.py     # GFPGAN/CodeFormer
+│   ├── interpolation.py    # RIFE frame interpolation
+│   ├── colorization.py     # DeOldify/DDColor
+│   ├── watermark_removal.py # LaMA inpainting
+│   ├── subtitle_removal.py # OCR + inpainting
+│   ├── subtitles.py        # Subtitle extraction
+│   ├── stabilization.py    # Video stabilization
+│   ├── scene_detection.py  # Scene boundary detection
+│   ├── hdr_conversion.py   # HDR/SDR conversion
+│   ├── audio.py            # Audio processing
+│   ├── audio_enhance.py    # Audio enhancement
+│   ├── audio_sync.py       # Audio-video sync
+│   ├── streaming.py        # Streaming mode
+│   ├── preview.py          # Preview generation
+│   └── advanced_models.py  # Extended model support
+├── cloud/
+│   ├── base.py             # Cloud provider base class
+│   ├── runpod.py           # RunPod integration
+│   ├── vastai.py           # Vast.ai integration
+│   └── storage.py          # Cloud storage utilities
+├── benchmarks/
+│   ├── benchmark_suite.py  # Performance benchmarks
+│   └── profiler.py         # Code profiling tools
 └── utils/
-    ├── gpu.py           # GPU/VRAM utilities
-    ├── disk.py          # Disk space utilities
-    ├── ffmpeg.py        # FFmpeg utilities
-    └── dependencies.py  # Dependency checking
+    ├── gpu.py              # GPU utilities
+    ├── multi_gpu.py        # Multi-GPU distribution
+    ├── disk.py             # Disk management
+    ├── ffmpeg.py           # FFmpeg wrapper
+    ├── model_manager.py    # Model download & cache
+    ├── output_manager.py   # Output directory config
+    ├── cache.py            # Result caching
+    ├── progress.py         # Progress tracking
+    ├── logging.py          # Structured logging
+    ├── security.py         # Input validation
+    ├── youtube.py          # YouTube download
+    ├── config_file.py      # Config file handling
+    ├── async_io.py         # Async I/O utilities
+    └── dependencies.py     # Dependency checks
 
-tests/                   # 270+ unit tests
+tests/                   # Unit & integration tests
+docs/                    # Documentation
+docker/                  # Docker configurations
+.github/                 # GitHub Actions CI/CD
 ```
 
 ---
 
-## API Reference
+## Technical Documentation
 
-### Core Classes
+### For Developers
 
-```python
-from framewright import (
-    # Core
-    VideoRestorer,
-    Config,
+See the [Technical Guide](docs/technical-guide.md) for:
+- API reference
+- Plugin architecture
+- Custom processor development
+- Testing and benchmarking
 
-    # Hardware
-    check_hardware,
-    print_hardware_report,
-    HardwareReport,
+### Configuration Options
 
-    # Metrics
-    ProcessingMetrics,
-    ProgressReporter,
-
-    # Validation
-    validate_frame_integrity,
-    validate_audio_stream,
-    analyze_audio_quality,
-    detect_artifacts,
-
-    # Errors
-    VideoRestorerError,
-    TransientError,
-    VRAMError,
-)
-
-# Processors (NEW in v1.3.0)
-from framewright.processors import (
-    # Analysis
-    FrameAnalyzer,
-    VideoAnalysis,
-    ContentType,
-    DegradationType,
-
-    # Enhancement
-    AdaptiveEnhancer,
-    AutoEnhancePipeline,
-
-    # Defect Repair
-    DefectDetector,
-    DefectRepairer,
-    AutoDefectProcessor,
-
-    # Face Restoration
-    FaceRestorer,
-    FaceModel,
-
-    # Interpolation
-    FrameInterpolator,
-)
-```
-
-### Auto-Enhancement API
-
-```python
-from framewright import VideoRestorer, Config
-
-# Configure with auto-enhancement enabled
-config = Config(
-    project_dir="./restoration",
-    scale_factor=4,
-    enable_auto_enhance=True,      # Enable auto-enhancement
-    auto_detect_content=True,       # Detect content type
-    auto_defect_repair=True,        # Auto repair scratches/dust
-    auto_face_restore=True,         # Auto restore faces
-    scratch_sensitivity=0.5,        # Sensitivity tuning
-    grain_reduction=0.3,
-)
-
-restorer = VideoRestorer(config)
-
-# Run fully automated restoration
-output = restorer.restore_video(
-    source="old_film.mp4",
-    enable_auto_enhance=True,       # Can also enable per-run
-    enable_rife=True,
-    target_fps=48,
-)
-```
+All options can be set via:
+1. CLI arguments
+2. Config file (`~/.framewright/config.yaml`)
+3. Environment variables (`FRAMEWRIGHT_*`)
+4. Python API
 
 ---
 
 ## License
 
-MIT License - See LICENSE file for details.
+This project is licensed under the **MIT License** - see [LICENSE.md](LICENSE.md) for details.
+
+This project builds upon many excellent open source projects. See [LICENSE.md](LICENSE.md) for full acknowledgements.
+
+---
 
 ## Contributing
 
-Contributions welcome! Please read CONTRIBUTING.md for guidelines.
+Contributions welcome! Please read our contributing guidelines before submitting PRs.
+
+---
 
 ## Acknowledgments
 
-- [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) - AI upscaling
-- [RIFE](https://github.com/megvii-research/ECCV2022-RIFE) - Frame interpolation
-- [GFPGAN](https://github.com/TencentARC/GFPGAN) - Face restoration
-- [CodeFormer](https://github.com/sczhou/CodeFormer) - Face restoration
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp) - Video downloading
-- [FFmpeg](https://ffmpeg.org/) - Video/audio processing
-- [Gradio](https://gradio.app/) - Web UI framework
+Special thanks to the creators of the open source models and tools that make this project possible:
+
+- [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) by Xintao Wang et al.
+- [RIFE](https://github.com/megvii-research/ECCV2022-RIFE) by Megvii Research
+- [GFPGAN](https://github.com/TencentARC/GFPGAN) by Tencent ARC Lab
+- [CodeFormer](https://github.com/sczhou/CodeFormer) by Shangchen Zhou
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) community
+- [FFmpeg](https://ffmpeg.org/) project
+- [Gradio](https://gradio.app/) by Hugging Face

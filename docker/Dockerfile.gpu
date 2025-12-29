@@ -1,0 +1,137 @@
+# FrameWright Video Restoration Pipeline - Full GPU Support
+# NVIDIA CUDA-enabled image for high-performance video restoration
+#
+# Requirements:
+#   - NVIDIA GPU with CUDA support
+#   - nvidia-container-toolkit installed on host
+#   - Docker configured to use NVIDIA runtime
+#
+# Build: docker build -t framewright:gpu -f docker/Dockerfile.gpu .
+# Run:   docker run --gpus all -v $(pwd)/input:/app/input -v $(pwd)/output:/app/output framewright:gpu restore --input /app/input/video.mp4
+
+# ============================================================
+# Stage 1: Builder - Install dependencies and download models
+# ============================================================
+FROM nvidia/cuda:12.1-devel-ubuntu22.04 AS builder
+
+# Prevent interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 \
+    python3.11-dev \
+    python3.11-venv \
+    python3-pip \
+    build-essential \
+    git \
+    wget \
+    unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create virtual environment
+RUN python3.11 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Upgrade pip and install build tools
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+
+# Copy project files
+WORKDIR /build
+COPY pyproject.toml ./
+COPY src/ ./src/
+
+# Install PyTorch with CUDA 12.1 support
+RUN pip install --no-cache-dir \
+    torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# Install the application with all dependencies
+RUN pip install --no-cache-dir -e ".[all,ui,dev]"
+
+# Install additional GPU-accelerated packages
+RUN pip install --no-cache-dir \
+    cupy-cuda12x \
+    nvidia-ml-py3
+
+# Download Real-ESRGAN (NCNN version with Vulkan support)
+RUN wget -q https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-ubuntu.zip \
+    && unzip -q realesrgan-ncnn-vulkan-20220424-ubuntu.zip -d /opt/bin \
+    && chmod +x /opt/bin/realesrgan-ncnn-vulkan \
+    && rm realesrgan-ncnn-vulkan-20220424-ubuntu.zip
+
+# Download RIFE (NCNN version with Vulkan support)
+RUN wget -q https://github.com/nihui/rife-ncnn-vulkan/releases/download/20221029/rife-ncnn-vulkan-20221029-ubuntu.zip \
+    && unzip -q rife-ncnn-vulkan-20221029-ubuntu.zip -d /tmp/rife \
+    && mkdir -p /opt/bin \
+    && cp /tmp/rife/rife-ncnn-vulkan-20221029-ubuntu/rife-ncnn-vulkan /opt/bin/ \
+    && cp /tmp/rife/rife-ncnn-vulkan-20221029-ubuntu/*.bin /opt/bin/ \
+    && cp /tmp/rife/rife-ncnn-vulkan-20221029-ubuntu/*.param /opt/bin/ \
+    && chmod +x /opt/bin/rife-ncnn-vulkan \
+    && rm -rf /tmp/rife
+
+# ============================================================
+# Stage 2: Runtime - Optimized GPU production image
+# ============================================================
+FROM nvidia/cuda:12.1-runtime-ubuntu22.04 AS runtime
+
+LABEL maintainer="FrameWright Team"
+LABEL version="1.3.1"
+LABEL description="AI-powered video restoration with full GPU support (CUDA 12.1)"
+LABEL org.opencontainers.image.source="https://github.com/framewright/framewright"
+
+# NVIDIA container runtime environment
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
+ENV CUDA_HOME=/usr/local/cuda
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH}
+
+# Prevent interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PATH="/opt/venv/bin:/opt/bin:/usr/local/cuda/bin:$PATH"
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 \
+    python3.11-venv \
+    ffmpeg \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender1 \
+    libvulkan1 \
+    libcudnn8 \
+    libnvinfer8 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy virtual environment from builder
+COPY --from=builder /opt/venv /opt/venv
+
+# Copy binary tools from builder
+COPY --from=builder /opt/bin /opt/bin
+
+# Copy application code
+WORKDIR /app
+COPY --from=builder /build/src ./src
+COPY --from=builder /build/pyproject.toml ./
+
+# Create directories for data and models
+RUN mkdir -p /app/input /app/output /app/models /root/.cache/framewright
+
+# Set shared memory size for PyTorch DataLoader
+# This is configured via docker run --shm-size or in docker-compose
+ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+# Expose Gradio UI port
+EXPOSE 7860
+
+# Health check - verify CUDA is accessible
+HEALTHCHECK --interval=30s --timeout=15s --start-period=10s --retries=3 \
+    CMD python3.11 -c "import torch; assert torch.cuda.is_available(), 'CUDA not available'; from framewright.config import Config; print('OK')" || exit 1
+
+# Default entrypoint
+ENTRYPOINT ["framewright"]
+CMD ["--help"]

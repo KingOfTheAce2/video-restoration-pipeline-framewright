@@ -380,3 +380,187 @@ def wait_for_vram(
         time.sleep(check_interval)
 
     return False
+
+
+class MultiGPUManager:
+    """Manager for distributing work across multiple GPUs.
+
+    Supports load balancing and automatic GPU selection based on
+    available memory and utilization.
+    """
+
+    def __init__(
+        self,
+        gpu_ids: Optional[List[int]] = None,
+        load_balance_strategy: str = "memory",
+    ):
+        """Initialize multi-GPU manager.
+
+        Args:
+            gpu_ids: List of GPU IDs to use (None = auto-detect all)
+            load_balance_strategy: How to distribute work:
+                - "memory": Prioritize GPUs with most free memory
+                - "round_robin": Distribute evenly across GPUs
+                - "utilization": Prioritize least utilized GPUs
+        """
+        self.strategy = load_balance_strategy
+        self._current_index = 0
+        self._gpu_assignments: Dict[int, int] = {}
+
+        # Auto-detect GPUs if not specified
+        if gpu_ids is None:
+            all_gpus = get_all_gpu_info()
+            self.gpu_ids = [g.index for g in all_gpus]
+        else:
+            self.gpu_ids = gpu_ids
+
+        if not self.gpu_ids:
+            logger.warning("No GPUs detected for multi-GPU processing")
+
+        logger.info(f"MultiGPUManager initialized with GPUs: {self.gpu_ids}")
+
+    @property
+    def gpu_count(self) -> int:
+        """Get number of available GPUs."""
+        return len(self.gpu_ids)
+
+    def is_available(self) -> bool:
+        """Check if multi-GPU processing is available."""
+        return self.gpu_count > 1
+
+    def get_next_gpu(self) -> int:
+        """Get the next GPU to use based on load balancing strategy.
+
+        Returns:
+            GPU device ID
+        """
+        if not self.gpu_ids:
+            return 0
+
+        if self.strategy == "round_robin":
+            gpu_id = self.gpu_ids[self._current_index % len(self.gpu_ids)]
+            self._current_index += 1
+            return gpu_id
+
+        elif self.strategy == "utilization":
+            gpus = get_all_gpu_info()
+            valid_gpus = [g for g in gpus if g.index in self.gpu_ids]
+            if not valid_gpus:
+                return self.gpu_ids[0]
+            # Sort by utilization (lowest first)
+            valid_gpus.sort(key=lambda g: g.utilization_percent)
+            return valid_gpus[0].index
+
+        else:  # "memory" strategy (default)
+            gpus = get_all_gpu_info()
+            valid_gpus = [g for g in gpus if g.index in self.gpu_ids]
+            if not valid_gpus:
+                return self.gpu_ids[0]
+            # Sort by free memory (highest first)
+            valid_gpus.sort(key=lambda g: g.free_memory_mb, reverse=True)
+            return valid_gpus[0].index
+
+    def assign_frames(
+        self,
+        frame_paths: List[Path],
+    ) -> Dict[int, List[Path]]:
+        """Distribute frames across GPUs for parallel processing.
+
+        Args:
+            frame_paths: List of frame file paths
+
+        Returns:
+            Dictionary mapping GPU ID to list of frame paths
+        """
+        if not self.gpu_ids:
+            return {0: frame_paths}
+
+        if not self.is_available():
+            return {self.gpu_ids[0]: frame_paths}
+
+        # Distribute frames evenly across GPUs
+        assignments: Dict[int, List[Path]] = {gpu: [] for gpu in self.gpu_ids}
+
+        for i, frame in enumerate(frame_paths):
+            gpu_id = self.gpu_ids[i % len(self.gpu_ids)]
+            assignments[gpu_id].append(frame)
+
+        # Log distribution
+        for gpu_id, frames in assignments.items():
+            logger.debug(f"GPU {gpu_id}: {len(frames)} frames assigned")
+
+        return assignments
+
+    def get_gpu_status(self) -> List[Dict]:
+        """Get current status of all managed GPUs.
+
+        Returns:
+            List of status dictionaries for each GPU
+        """
+        statuses = []
+        all_gpus = get_all_gpu_info()
+
+        for gpu in all_gpus:
+            if gpu.index in self.gpu_ids:
+                statuses.append({
+                    "id": gpu.index,
+                    "name": gpu.name,
+                    "memory_total_mb": gpu.total_memory_mb,
+                    "memory_used_mb": gpu.used_memory_mb,
+                    "memory_free_mb": gpu.free_memory_mb,
+                    "utilization_percent": gpu.utilization_percent,
+                    "temperature_c": gpu.temperature_celsius,
+                })
+
+        return statuses
+
+    def wait_for_all_ready(
+        self,
+        min_free_mb: int = 1000,
+        timeout_seconds: float = 60.0,
+    ) -> bool:
+        """Wait for all GPUs to have sufficient free memory.
+
+        Args:
+            min_free_mb: Minimum free memory per GPU
+            timeout_seconds: Maximum time to wait
+
+        Returns:
+            True if all GPUs ready, False on timeout
+        """
+        import time
+
+        start_time = time.time()
+
+        while time.time() - start_time < timeout_seconds:
+            all_ready = True
+
+            for gpu_id in self.gpu_ids:
+                info = get_gpu_memory_info(gpu_id)
+                if info is None or info["free_mb"] < min_free_mb:
+                    all_ready = False
+                    break
+
+            if all_ready:
+                return True
+
+            time.sleep(1.0)
+
+        return False
+
+
+def distribute_frames_to_gpus(
+    frame_paths: List[Path],
+    gpu_ids: Optional[List[int]] = None,
+) -> Dict[int, List[Path]]:
+    """Convenience function to distribute frames across available GPUs.
+
+    Args:
+        frame_paths: List of frame file paths
+        gpu_ids: Optional list of specific GPU IDs to use
+
+    Returns:
+        Dictionary mapping GPU ID to list of frames
+    """
+    manager = MultiGPUManager(gpu_ids=gpu_ids)
+    return manager.assign_frames(frame_paths)

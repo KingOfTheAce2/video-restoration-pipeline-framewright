@@ -1,8 +1,8 @@
 """FrameWright - Video Restoration Pipeline using Real-ESRGAN."""
-__version__ = "1.2.0"
+__version__ = "1.3.1"
 
 from .config import Config
-from .restorer import VideoRestorer
+from .restorer import VideoRestorer, ProgressInfo
 
 # Checkpointing
 from .checkpoint import (
@@ -11,7 +11,39 @@ from .checkpoint import (
     FrameCheckpoint,
 )
 
-# Error handling
+# New standardized exceptions (v1.3.1+)
+from .exceptions import (
+    FramewrightError,
+    ConfigurationError as FramewrightConfigurationError,
+    ProcessingError,
+    ModelError,
+    HardwareError,
+    GPUError,
+    OutOfMemoryError,
+    VideoError,
+    DownloadError as FramewrightDownloadError,
+    CheckpointError,
+    InterpolationError as FramewrightInterpolationError,
+    EnhancementError as FramewrightEnhancementError,
+    ValidationError as FramewrightValidationError,
+    DependencyError as FramewrightDependencyError,
+    DiskSpaceError as FramewrightDiskSpaceError,
+)
+
+# Structured logging (v1.3.1+)
+from .utils.logging import (
+    LogConfig,
+    FramewrightLogger,
+    configure_logging,
+    get_logger,
+    set_level,
+    add_file_handler,
+    ProcessingMetricsLog,
+    ErrorAggregator,
+    configure_from_cli,
+)
+
+# Legacy error handling (for backward compatibility)
 from .errors import (
     VideoRestorerError,
     TransientError,
@@ -82,12 +114,39 @@ __all__ = [
     # Core
     "VideoRestorer",
     "Config",
+    "ProgressInfo",
     "__version__",
     # Checkpointing
     "CheckpointManager",
     "PipelineCheckpoint",
     "FrameCheckpoint",
-    # Errors
+    # New standardized exceptions (v1.3.1+)
+    "FramewrightError",
+    "FramewrightConfigurationError",
+    "ProcessingError",
+    "ModelError",
+    "HardwareError",
+    "GPUError",
+    "OutOfMemoryError",
+    "VideoError",
+    "FramewrightDownloadError",
+    "CheckpointError",
+    "FramewrightInterpolationError",
+    "FramewrightEnhancementError",
+    "FramewrightValidationError",
+    "FramewrightDependencyError",
+    "FramewrightDiskSpaceError",
+    # Structured logging (v1.3.1+)
+    "LogConfig",
+    "FramewrightLogger",
+    "configure_logging",
+    "get_logger",
+    "set_level",
+    "add_file_handler",
+    "ProcessingMetricsLog",
+    "ErrorAggregator",
+    "configure_from_cli",
+    # Legacy errors (backward compatibility)
     "VideoRestorerError",
     "TransientError",
     "ResourceError",

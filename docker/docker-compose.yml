@@ -1,0 +1,169 @@
+# FrameWright Docker Compose Configuration
+#
+# This is the main docker-compose file supporting both CPU and GPU configurations.
+#
+# Quick Start:
+#   CPU:  docker-compose up framewright-cpu
+#   GPU:  docker-compose -f docker-compose.yml -f docker-compose.gpu.yml up framewright-gpu
+#   UI:   docker-compose up framewright-ui
+#
+# Environment Variables:
+#   INPUT_DIR:  Directory containing input videos (default: ./input)
+#   OUTPUT_DIR: Directory for processed videos (default: ./output)
+#   MODEL_DIR:  Directory for AI models (default: ./models)
+#   UI_PORT:    Port for web UI (default: 7860)
+#
+# See docker/.env.example for all available options
+
+services:
+  # ============================================================
+  # CPU-Only Processing Service
+  # ============================================================
+  framewright-cpu:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.cpu
+    image: framewright:cpu
+    container_name: framewright-cpu
+    environment:
+      - FRAMEWRIGHT_DEVICE=cpu
+      - FRAMEWRIGHT_OUTPUT_DIR=/app/output
+      - FRAMEWRIGHT_MODEL_DIR=/app/models
+    volumes:
+      - ${INPUT_DIR:-./input}:/app/input:ro
+      - ${OUTPUT_DIR:-./output}:/app/output
+      - ${MODEL_DIR:-./models}:/app/models
+      - framewright-cache:/root/.cache/framewright
+    working_dir: /app
+    tty: true
+    stdin_open: true
+
+  # ============================================================
+  # GPU Processing Service (requires nvidia-container-toolkit)
+  # ============================================================
+  framewright-gpu:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.gpu
+    image: framewright:gpu
+    container_name: framewright-gpu
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-all}
+      - FRAMEWRIGHT_DEVICE=cuda
+      - FRAMEWRIGHT_OUTPUT_DIR=/app/output
+      - FRAMEWRIGHT_MODEL_DIR=/app/models
+    volumes:
+      - ${INPUT_DIR:-./input}:/app/input:ro
+      - ${OUTPUT_DIR:-./output}:/app/output
+      - ${MODEL_DIR:-./models}:/app/models
+      - framewright-cache:/root/.cache/framewright
+    working_dir: /app
+    tty: true
+    stdin_open: true
+    # Note: GPU runtime configuration is in docker-compose.gpu.yml
+
+  # ============================================================
+  # Web UI Service (Gradio)
+  # ============================================================
+  framewright-ui:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.cpu
+    image: framewright:cpu
+    container_name: framewright-ui
+    ports:
+      - "${UI_PORT:-7860}:7860"
+    environment:
+      - FRAMEWRIGHT_DEVICE=${DEVICE:-cpu}
+      - FRAMEWRIGHT_OUTPUT_DIR=/app/output
+      - FRAMEWRIGHT_MODEL_DIR=/app/models
+      - GRADIO_SERVER_NAME=0.0.0.0
+      - GRADIO_SERVER_PORT=7860
+    volumes:
+      - ${INPUT_DIR:-./input}:/app/input
+      - ${OUTPUT_DIR:-./output}:/app/output
+      - ${MODEL_DIR:-./models}:/app/models
+      - framewright-cache:/root/.cache/framewright
+    working_dir: /app
+    command: ["python", "-m", "framewright.ui"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7860/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ============================================================
+  # GPU-Enabled Web UI Service
+  # ============================================================
+  framewright-ui-gpu:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.gpu
+    image: framewright:gpu
+    container_name: framewright-ui-gpu
+    ports:
+      - "${UI_PORT:-7860}:7860"
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-all}
+      - FRAMEWRIGHT_DEVICE=cuda
+      - FRAMEWRIGHT_OUTPUT_DIR=/app/output
+      - FRAMEWRIGHT_MODEL_DIR=/app/models
+      - GRADIO_SERVER_NAME=0.0.0.0
+      - GRADIO_SERVER_PORT=7860
+    volumes:
+      - ${INPUT_DIR:-./input}:/app/input
+      - ${OUTPUT_DIR:-./output}:/app/output
+      - ${MODEL_DIR:-./models}:/app/models
+      - framewright-cache:/root/.cache/framewright
+    working_dir: /app
+    command: ["python3.11", "-m", "framewright.ui"]
+    restart: unless-stopped
+    # Note: GPU runtime configuration is in docker-compose.gpu.yml
+
+  # ============================================================
+  # Batch Processing Service (Watch Directory)
+  # ============================================================
+  framewright-watch:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.cpu
+    image: framewright:cpu
+    container_name: framewright-watch
+    environment:
+      - FRAMEWRIGHT_DEVICE=${DEVICE:-cpu}
+      - FRAMEWRIGHT_OUTPUT_DIR=/app/output
+      - FRAMEWRIGHT_PRESET=${PRESET:-quality}
+    volumes:
+      - ${WATCH_DIR:-./watch}:/app/watch:ro
+      - ${OUTPUT_DIR:-./output}:/app/output
+      - ${PROCESSED_DIR:-./processed}:/app/processed
+      - ${MODEL_DIR:-./models}:/app/models
+      - framewright-cache:/root/.cache/framewright
+    working_dir: /app
+    command: >
+      watch
+      --input-dir /app/watch
+      --output-dir /app/output
+      --processed-dir /app/processed
+      --preset ${PRESET:-quality}
+      --interval ${WATCH_INTERVAL:-60}
+    restart: unless-stopped
+
+# ============================================================
+# Named Volumes
+# ============================================================
+volumes:
+  framewright-cache:
+    driver: local
+    name: framewright-cache
+
+# ============================================================
+# Networks (optional, for multi-service communication)
+# ============================================================
+networks:
+  default:
+    name: framewright-network

@@ -50,6 +50,113 @@ from .dependencies import (
     DependencyReport,
 )
 
+from .async_io import (
+    AsyncFileOperations,
+    AsyncSubprocess,
+    AsyncDownloader,
+    AsyncFrameProcessor,
+    AsyncDownloadResult,
+    AsyncReadResult,
+    AsyncWriteResult,
+    run_pipeline_async,
+    run_async,
+    get_io_executor,
+    shutdown_executor,
+)
+
+from .model_manager import (
+    ModelManager,
+    ModelType,
+    ModelInfo,
+    DownloadProgress,
+    DownloadError,
+    ModelVerificationError,
+    MODEL_REGISTRY,
+    get_model_manager,
+    ProgressCallback,
+)
+
+from .output_manager import (
+    OutputManager,
+    OutputPaths,
+)
+
+from .youtube import (
+    YouTubeDownloader,
+    VideoInfo,
+    FormatInfo,
+    ChapterInfo,
+    DownloadProgress as YouTubeDownloadProgress,
+    YouTubeDownloadError,
+    YouTubeMetadataError,
+    get_youtube_downloader,
+    ProgressCallback as YouTubeProgressCallback,
+)
+
+from .cache import (
+    FrameCache,
+    CacheManager,
+    CacheConfig,
+    CacheEntry,
+    CacheStats,
+    PerceptualHasher,
+    compute_frame_hash,
+    get_cache_manager,
+    get_global_cache,
+    shutdown_cache,
+)
+
+from .multi_gpu import (
+    GPUManager,
+    MultiGPUDistributor,
+    GPUInfo as MultiGPUInfo,
+    DistributionResult,
+    WorkItem,
+    WorkStealingQueue,
+    LoadBalanceStrategy,
+    detect_gpus,
+    get_optimal_gpu,
+    distribute_frames,
+)
+
+from .config_file import (
+    ConfigFileManager,
+    ValidationError as ConfigValidationError,
+    get_config_manager,
+    DEFAULT_CONFIG_TEMPLATE,
+    CONFIG_SCHEMA,
+)
+
+from .progress import (
+    RichProgress,
+    ProgressTracker,
+    ProgressOutputMode,
+    GPUMetrics,
+    GPUMonitor,
+    StageInfo,
+    ProgressCallback as RichProgressCallback,
+    LogFileCallback,
+    FallbackProgress,
+    create_progress_tracker,
+    simple_progress,
+    is_rich_available,
+    is_pynvml_available,
+)
+
+# Structured logging (v1.3.1+)
+from .logging import (
+    LogConfig,
+    FramewrightLogger,
+    configure_logging,
+    get_logger,
+    set_level,
+    add_file_handler,
+    ProcessingMetricsLog,
+    ErrorAggregator,
+    configure_from_cli,
+    get_cli_args_parser,
+)
+
 __all__ = [
     # FFmpeg utilities
     'check_ffmpeg_installed',
@@ -90,4 +197,92 @@ __all__ = [
     'compare_versions',
     'DependencyInfo',
     'DependencyReport',
+    # Async I/O utilities
+    'AsyncFileOperations',
+    'AsyncSubprocess',
+    'AsyncDownloader',
+    'AsyncFrameProcessor',
+    'AsyncDownloadResult',
+    'AsyncReadResult',
+    'AsyncWriteResult',
+    'run_pipeline_async',
+    'run_async',
+    'get_io_executor',
+    'shutdown_executor',
+    # Model management
+    'ModelManager',
+    'ModelType',
+    'ModelInfo',
+    'DownloadProgress',
+    'DownloadError',
+    'ModelVerificationError',
+    'MODEL_REGISTRY',
+    'get_model_manager',
+    'ProgressCallback',
+    # Output management
+    'OutputManager',
+    'OutputPaths',
+    # YouTube utilities
+    'YouTubeDownloader',
+    'VideoInfo',
+    'FormatInfo',
+    'ChapterInfo',
+    'YouTubeDownloadProgress',
+    'YouTubeDownloadError',
+    'YouTubeMetadataError',
+    'get_youtube_downloader',
+    'YouTubeProgressCallback',
+    # Cache utilities
+    'FrameCache',
+    'CacheManager',
+    'CacheConfig',
+    'CacheEntry',
+    'CacheStats',
+    'PerceptualHasher',
+    'compute_frame_hash',
+    'get_cache_manager',
+    'get_global_cache',
+    'shutdown_cache',
+    # Multi-GPU utilities
+    'GPUManager',
+    'MultiGPUDistributor',
+    'MultiGPUInfo',
+    'DistributionResult',
+    'WorkItem',
+    'WorkStealingQueue',
+    'LoadBalanceStrategy',
+    'detect_gpus',
+    'get_optimal_gpu',
+    'distribute_frames',
+    # Config file utilities
+    'ConfigFileManager',
+    'ConfigValidationError',
+    'get_config_manager',
+    'DEFAULT_CONFIG_TEMPLATE',
+    'CONFIG_SCHEMA',
+    # Progress utilities
+    'RichProgress',
+    'ProgressTracker',
+    'ProgressOutputMode',
+    'GPUMetrics',
+    'GPUMonitor',
+    'StageInfo',
+    'RichProgressCallback',
+    'LogFileCallback',
+    'FallbackProgress',
+    'create_progress_tracker',
+    'simple_progress',
+    'is_rich_available',
+    'is_pynvml_available',
+    # Structured logging
+    'LogConfig',
+    'FramewrightLogger',
+    'configure_logging',
+    'get_logger',
+    'set_level',
+    'add_file_handler',
+    'ProcessingMetricsLog',
+    'ErrorAggregator',
+    'configure_from_cli',
+    'get_cli_args_parser',
 ]

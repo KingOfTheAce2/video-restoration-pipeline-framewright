@@ -108,3 +108,57 @@ logs/
 *.key
 credentials.json
 secrets.json
+
+# ===========================================
+# FrameWright Models & Cache
+# ===========================================
+models/
+*.pth
+*.onnx
+*.safetensors
+.cache/
+*.pickle
+
+# ===========================================
+# Video Processing Artifacts
+# ===========================================
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.webm
+!tests/fixtures/*.mp4
+source/
+restored/
+previews/
+
+# ===========================================
+# Documentation Build
+# ===========================================
+site/
+_build/
+.doctrees/
+
+# ===========================================
+# Security
+# ===========================================
+.secrets.baseline
+.secrets/
+
+# ===========================================
+# MyPy / Type Checking
+# ===========================================
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# ===========================================
+# Jupyter
+# ===========================================
+.ipynb_checkpoints/
+*.ipynb
+
+# ===========================================
+# Docker
+# ===========================================
+docker-compose.override.yml
