@@ -190,6 +190,186 @@ The FrameWright video restoration pipeline is a production-quality system with c
 
 ---
 
+## Why These Improvements Matter
+
+This section explains the gap between current implementations and proposed enhancements, including implementation barriers and expected quality improvements.
+
+### High Priority Analysis
+
+#### TAP Denoising Framework
+
+**Current Implementation:** Our `temporal_denoise.py` uses classical algorithms (NLMeans, bilateral filtering) with optical flow alignment.
+
+**Why Not Implemented Yet:**
+- TAP requires **pre-trained image denoiser weights** (e.g., Restormer, NAFNet) as the backbone
+- Needs PyTorch model fine-tuning infrastructure
+- Requires training on video sequences (even if unsupervised)
+
+**Quality Comparison:**
+
+| Aspect | Current | TAP |
+|--------|---------|-----|
+| Spatial denoising | OpenCV filters | State-of-art neural denoisers |
+| Temporal learning | Hand-crafted flow warping | Learned temporal attention |
+| Adaptability | Fixed parameters | Self-tuning from data |
+| Quality (PSNR) | ~30-32 dB | ~34-38 dB |
+
+---
+
+#### Exemplar-Based Colorization (SwinTExCo/BiSTNet)
+
+**Current Implementation:** DeOldify/DDColor auto-colorize based on learned priors - they "guess" colors.
+
+**Why Not Implemented Yet:**
+- Requires Swin Transformer architecture (heavy model)
+- Needs reference image matching pipeline
+- BiSTNet uses bidirectional propagation requiring full video in memory
+
+**Quality Comparison:**
+
+| Aspect | Current (DDColor) | SwinTExCo |
+|--------|-------------------|-----------|
+| Color accuracy | AI's best guess | User-guided with reference |
+| Temporal consistency | Per-frame (flickers) | Bidirectional fusion |
+| Historical accuracy | Generic colors | Match actual source photos |
+| Use case | Quick auto-color | Archival restoration |
+
+*Example: Colorizing 1920s footage - DDColor guesses skin tones. SwinTExCo lets you provide a color photo from that era as reference.*
+
+---
+
+#### AESRGAN Face Enhancement
+
+**Current Implementation:** GFPGAN/CodeFormer restore faces using GAN-based priors.
+
+**Why Not Implemented Yet:**
+- AESRGAN model weights aren't as widely distributed
+- Requires attention mechanism integration
+- Would need comparative testing against CodeFormer
+
+**Quality Comparison:**
+
+| Aspect | Current (GFPGAN) | AESRGAN |
+|--------|------------------|---------|
+| Detail preservation | Sometimes over-smooths | Attention preserves subtle features |
+| Artifacts | Can hallucinate features | Better high-frequency control |
+| Speed | ~50ms/face | Similar or faster |
+| Eye/mouth detail | Good | Better fine detail |
+
+---
+
+### Medium Priority Analysis
+
+#### Diffusion-Based Video Super-Resolution
+
+**Current Implementation:** Real-ESRGAN uses GAN-based upscaling.
+
+**Why Not Implemented Yet:**
+- Diffusion models are **10-100x slower** than GANs
+- Require significant VRAM (12GB+ for video)
+- Complex inference pipeline with iterative denoising
+
+**Quality Comparison:**
+
+| Aspect | Current (Real-ESRGAN) | Diffusion VSR |
+|--------|----------------------|---------------|
+| Texture generation | Can look "plastic" | Realistic fine detail |
+| Handling unknowns | Struggles with severe damage | Generates plausible content |
+| Perceptual quality | Good | State-of-art |
+| Speed | ~0.1s/frame | ~2-10s/frame |
+
+*Trade-off: Quality vs speed. Diffusion wins on quality but loses badly on processing time.*
+
+---
+
+#### QP-Aware Codec Artifact Removal
+
+**Current Implementation:** No specific codec artifact handling - we treat all degradation generically.
+
+**Why Not Implemented Yet:**
+- Requires QP extraction from video bitstream (complex)
+- Model must be trained on compression-specific artifacts
+- WACV 2025 paper is very recent (no public weights yet)
+
+**Quality Comparison:**
+
+| Aspect | Current | QP-Aware |
+|--------|---------|----------|
+| Blocking artifacts | Generic denoising | Targeted removal |
+| Banding | Not addressed | Specifically handled |
+| Mosquito noise | Partially removed | Precisely targeted |
+| Adaptation | One-size-fits-all | Adapts to compression level |
+
+*Critical for YouTube sources which are heavily compressed.*
+
+---
+
+#### Missing Frame Generation
+
+**Current Implementation:** RIFE interpolates **between existing frames** - requires 2 valid frames.
+
+**Why Not Implemented Yet:**
+- Requires generative model (diffusion/transformer)
+- Training data for damaged film is scarce
+- High computational cost
+- Risk of hallucinating incorrect content
+
+**Quality Comparison:**
+
+| Aspect | Current (RIFE) | Generative |
+|--------|----------------|------------|
+| Missing single frame | Interpolate from neighbors | Generate from context |
+| Missing sequence | Cannot handle | Can reconstruct |
+| Damaged frames | Must use as-is | Can inpaint damage |
+| Use case | Smooth motion | Archival recovery |
+
+*Example: Film reel with 10 consecutive damaged frames - RIFE can't help, generative AI could reconstruct the scene.*
+
+---
+
+#### Unified Multi-Task Model (BCell RNN)
+
+**Current Implementation:** Separate models for each task:
+- Real-ESRGAN for upscaling
+- Temporal denoiser for noise
+- Separate deblurring (if implemented)
+
+**Why Not Implemented Yet:**
+- Requires custom RNN architecture
+- Training from scratch needed
+- Model complexity high
+
+**Quality Comparison:**
+
+| Aspect | Current (Separate) | BCell Unified |
+|--------|-------------------|---------------|
+| Model count | 3-5 models | 1 model |
+| Memory usage | High (load all) | Lower |
+| Processing | Sequential passes | Single pass |
+| Cross-task optimization | None | Joint optimization |
+| PSNR improvement | Baseline | +1-4 dB |
+
+---
+
+### Implementation Effort Summary
+
+| Enhancement | Main Barrier | Effort | Quick Win? |
+|-------------|--------------|--------|------------|
+| TAP Denoising | Need pretrained backbone + training | High | No |
+| SwinTExCo | Heavy transformer model | Medium | Yes |
+| AESRGAN | Model availability | Low | **Yes** |
+| Diffusion VSR | 10-100x slower processing | Medium | No |
+| QP-Aware | No public weights yet | High | No |
+| Missing Frame Gen | Generative model training | Very High | No |
+| BCell RNN | Custom architecture + training | High | No |
+
+**Recommended Implementation Order:**
+1. **AESRGAN** - Drop-in replacement, lowest effort
+2. **SwinTExCo** - Clear user value for archival work
+3. **TAP** - Significant quality jump for denoising
+
+---
+
 ## Low Priority Improvements
 
 ### Plugin Architecture
