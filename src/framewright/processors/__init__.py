@@ -18,6 +18,7 @@ This module contains various processors for audio and video manipulation:
 - audio_sync: AI-powered audio-video synchronization detection and correction
 - stabilization: Video stabilization using FFmpeg vidstab and OpenCV
 - subtitle_removal: Burnt-in subtitle detection and removal using OCR + inpainting
+- temporal_denoise: Advanced temporal denoising with optical flow and flicker reduction
 """
 
 from .audio import AudioProcessor, AudioProcessorError
@@ -247,6 +248,27 @@ from .subtitle_removal import (
     check_ocr_available,
 )
 
+from .temporal_denoise import (
+    # Enums
+    DenoiseMethod,
+    FlickerMode,
+    OpticalFlowMethod,
+    # Data classes
+    TemporalDenoiseConfig,
+    TemporalDenoiseResult,
+    FlowField,
+    # Main classes
+    OpticalFlowEstimator,
+    FlickerReducer,
+    TemporalConsistencyFilter,
+    TemporalDenoiser,
+    AutoTemporalDenoiser,
+    # Convenience functions
+    create_temporal_denoiser,
+    denoise_video_frames,
+    auto_denoise_video,
+)
+
 __all__ = [
     # Audio (basic)
     "AudioProcessor",
@@ -418,4 +440,19 @@ __all__ = [
     "detect_burnt_subtitles",
     "remove_burnt_subtitles",
     "check_ocr_available",
+    # Temporal Denoising
+    "DenoiseMethod",
+    "FlickerMode",
+    "OpticalFlowMethod",
+    "TemporalDenoiseConfig",
+    "TemporalDenoiseResult",
+    "FlowField",
+    "OpticalFlowEstimator",
+    "FlickerReducer",
+    "TemporalConsistencyFilter",
+    "TemporalDenoiser",
+    "AutoTemporalDenoiser",
+    "create_temporal_denoiser",
+    "denoise_video_frames",
+    "auto_denoise_video",
 ]

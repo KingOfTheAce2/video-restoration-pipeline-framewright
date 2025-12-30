@@ -1,9 +1,9 @@
 # FrameWright Video Restoration Pipeline - Improvements & Roadmap
 
 **Generated:** 2025-12-29
-**Version:** 1.3.0
+**Version:** 1.0.0
 **Analysis Scope:** Complete codebase review
-**Last Updated:** 2025-12-29
+**Last Updated:** 2025-12-30
 
 ---
 
@@ -13,7 +13,7 @@ The FrameWright video restoration pipeline is a production-quality system with c
 
 ---
 
-## Completed Features (v1.3.0)
+## Completed Features (v1.0.0)
 
 ### Core Pipeline
 - **CLI Implementation** - Full VideoRestorer integration with all commands
@@ -38,6 +38,7 @@ The FrameWright video restoration pipeline is a production-quality system with c
 - **HDR Conversion** - SDR/HDR format conversion support
 - **Scene Detection** - Automatic scene boundary detection
 - **Defect Repair** - Scratch, dust, grain removal
+- **Advanced Temporal Denoising** - Multi-frame context with optical flow and flicker reduction
 
 ### Hardware & Performance
 - **GPU Memory Pre-check** - VRAM validation and tile size optimization
@@ -77,21 +78,115 @@ The FrameWright video restoration pipeline is a production-quality system with c
 
 ---
 
-## In Development
+## High Priority Improvements (v2.0 Roadmap)
 
-### Real-time Preview
-**Status:** Implementation started
+### TAP Denoising Framework
 
-- Live preview of enhancement effects before full processing
-- Frame-by-frame comparison view
-- A/B toggle between original and enhanced
+**Current:** Temporal denoising with optical flow-guided filtering.
 
-### Enhanced Batch Processing
-**Status:** Design phase
+**Enhancement:** Integrate the **TAP framework** (ECCV 2024) which adds tunable temporal modules to pre-trained image denoisers.
 
-- Job queue management with priorities
-- Pause/resume individual jobs
-- Scheduled processing windows
+**Benefits:**
+- Uses existing high-quality image denoisers as spatial priors
+- Progressive fine-tuning with pseudo-clean frames
+- Unsupervised learning - no paired video data needed
+- Superior performance on both sRGB and raw video
+
+**Reference:** [TAP GitHub](https://github.com/zfu006/TAP) | [ECCV 2024 Paper](https://link.springer.com/chapter/10.1007/978-3-031-72992-8_20)
+
+---
+
+### Exemplar-Based Colorization (SwinTExCo/BiSTNet)
+
+**Current:** DeOldify (archived 2024) and DDColor for automatic colorization.
+
+**Enhancement:** Add **SwinTExCo** or **BiSTNet** (TPAMI 2024) for user-guided reference-based colorization.
+
+**Benefits:**
+- User provides reference color image for guided colorization
+- Swin Transformer backbone for better feature extraction
+- Bidirectional temporal fusion eliminates flickering
+- Superior quality for archival restoration work
+
+**Reference:** [SwinTExCo Paper](https://www.sciencedirect.com/science/article/abs/pii/S0957417424023042)
+
+---
+
+### AESRGAN Face Enhancement
+
+**Current:** GFPGAN v1.3/v1.4 and CodeFormer for face restoration.
+
+**Enhancement:** Add **AESRGAN** (Attention-Enhanced ESRGAN) for better facial detail preservation.
+
+**Benefits:**
+- Explicit attention modulation preserves subtle facial details
+- Reduces artifacts in high-frequency regions
+- More computationally efficient than transformer approaches
+- Drop-in enhancement to existing face pipeline
+
+**Reference:** [AESRGAN Analysis](https://nhsjs.com/2025/enhancing-super-resolution-models-a-comparative-analysis-of-real-esrgan-aesrgan-and-esrgan/)
+
+---
+
+## Medium Priority Improvements
+
+### Diffusion-Based Video Super-Resolution
+
+**Current:** Real-ESRGAN, BasicVSR++, and VRT for upscaling.
+
+**Enhancement:** Integrate diffusion-based VSR models like **Upscale-A-Video** (CVPR 2024) or **SeedVR** (CVPR 2025).
+
+**Benefits:**
+- Superior texture generation vs GAN-based methods
+- Better handling of diverse real-world degradations
+- State-of-the-art perceptual quality metrics
+
+**Reference:** [DiffVSR](https://arxiv.org/html/2501.10110v1) | [RealisVSR](https://arxiv.org/html/2507.19138v1)
+
+---
+
+### QP-Aware Codec Artifact Removal
+
+**Current:** No specific handling for codec compression artifacts.
+
+**Enhancement:** Implement **QP-aware restoration** (WACV 2025) for reversing codec compression damage.
+
+**Benefits:**
+- Specifically addresses 8K video codec compression artifacts
+- QP (Quantization Parameter) aware - adapts to compression level
+- Combines transformer and diffusion approaches
+- Critical for streaming/web video restoration
+
+---
+
+### Missing Frame Generation
+
+**Current:** RIFE interpolation between existing frames.
+
+**Enhancement:** Integrate **generative AI frame reconstruction** for damaged/missing frames.
+
+**Benefits:**
+- Reconstruct completely missing frames in damaged film reels
+- Essential for archival restoration with physical damage
+- Goes beyond interpolation to actual content generation
+
+**Reference:** [AI in Film Archives - Pulitzer Center](https://pulitzercenter.org/stories/saving-cinema-ais-starring-role-preserving-film-archives)
+
+---
+
+### Unified Multi-Task Model (BCell RNN)
+
+**Current:** Separate models for denoising, deblurring, and super-resolution.
+
+**Enhancement:** Implement a **unified BCell-based RNN** handling multiple restoration tasks.
+
+**Benefits:**
+- Single model for denoising, deblurring, AND super-resolution
+- Bi-directional hidden states leverage past AND future frames
+- 1-4 dB PSNR improvement OR several times less computation
+- Reduces model management overhead
+
+**Reference:** [Versatile RNN for Video Restoration](https://www.sciencedirect.com/science/article/abs/pii/S0031320323000614)
 
 ---
 
@@ -150,19 +245,6 @@ GET  /api/v1/gpus          - List available GPUs
 
 ---
 
-### Advanced Temporal Denoising
-
-**Issue:** Current frame-by-frame processing may introduce temporal inconsistencies.
-
-**Recommendation:** Implement temporal-aware denoising:
-- Use multi-frame context for smoother results
-- Optical flow-guided temporal consistency
-- Flickering reduction algorithm
-
-**Impact:** Low - Quality enhancement for specific content
-
----
-
 ### Mobile Companion App
 
 **Issue:** No way to monitor/control jobs from mobile devices.
@@ -181,13 +263,17 @@ GET  /api/v1/gpus          - List available GPUs
 
 | Version | Date | Changes |
 |---------|------|---------|
-| 1.3.0 | 2025-12-29 | Cloud support, streaming, multi-GPU, enhanced audio |
-| 1.2.0 | 2025-12-28 | Subtitle removal, scene detection, stabilization |
-| 1.1.0 | 2025-12-27 | Colorization, watermark removal, batch processing |
-| 1.0.0 | 2025-12-26 | Initial release with core features |
+| 1.0.0 | TBD | Initial release with all features |
+
+### Development Changelog
+- 2025-12-30: Added advanced temporal denoising with optical flow, flicker reduction
+- 2025-12-29: Added cloud support, streaming, multi-GPU, enhanced audio
+- 2025-12-28: Added subtitle removal, scene detection, stabilization
+- 2025-12-27: Added colorization, watermark removal, batch processing
+- 2025-12-26: Initial development with core features
 
 ---
 
 *This document should be reviewed and updated as improvements are implemented.*
 
-*Last updated: 2025-12-29*
+*Last updated: 2025-12-30*
