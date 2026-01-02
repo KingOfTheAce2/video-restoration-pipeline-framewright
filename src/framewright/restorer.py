@@ -4,6 +4,7 @@ Includes robust error handling, checkpointing, and quality validation.
 """
 import json
 import logging
+import platform
 import shutil
 import subprocess
 import time
@@ -14,6 +15,107 @@ from pathlib import Path
 from typing import Callable, Dict, Any, Optional, List, Tuple, Union
 
 from .config import Config, RestoreOptions
+
+
+# =============================================================================
+# Binary Path Helpers
+# =============================================================================
+
+def _find_ffmpeg_binary(name: str) -> Optional[str]:
+    """Find ffmpeg/ffprobe binary in PATH or common locations."""
+    # Check PATH first
+    path = shutil.which(name)
+    if path:
+        return path
+
+    # Check common installation directories
+    exe_suffix = ".exe" if platform.system() == "Windows" else ""
+    search_paths = [
+        # Common Windows locations
+        Path("F:/ffmpeg-8.0.1-essentials_build/bin") / f"{name}{exe_suffix}",
+        Path("C:/ffmpeg/bin") / f"{name}{exe_suffix}",
+        Path.home() / "ffmpeg" / "bin" / f"{name}{exe_suffix}",
+        Path.home() / ".framewright" / "bin" / f"{name}{exe_suffix}",
+        # Common Unix locations
+        Path("/usr/local/bin") / name,
+        Path("/opt/homebrew/bin") / name,
+    ]
+
+    for search_path in search_paths:
+        if search_path.exists():
+            return str(search_path)
+
+    return None
+
+
+# Cache the binary paths
+_ffmpeg_path: Optional[str] = None
+_ffprobe_path: Optional[str] = None
+
+
+def get_ffmpeg_path() -> str:
+    """Get ffmpeg binary path, raising error if not found."""
+    global _ffmpeg_path
+    if _ffmpeg_path is None:
+        _ffmpeg_path = _find_ffmpeg_binary("ffmpeg")
+    if _ffmpeg_path is None:
+        raise FileNotFoundError("ffmpeg not found in PATH or common locations")
+    return _ffmpeg_path
+
+
+def get_ffprobe_path() -> str:
+    """Get ffprobe binary path, raising error if not found."""
+    global _ffprobe_path
+    if _ffprobe_path is None:
+        _ffprobe_path = _find_ffmpeg_binary("ffprobe")
+    if _ffprobe_path is None:
+        raise FileNotFoundError("ffprobe not found in PATH or common locations")
+    return _ffprobe_path
+
+
+def _find_ytdlp_binary() -> Optional[str]:
+    """Find yt-dlp binary in PATH or common locations."""
+    # Check PATH first
+    path = shutil.which("yt-dlp")
+    if path:
+        return path
+
+    # Check common installation directories
+    exe_suffix = ".exe" if platform.system() == "Windows" else ""
+    home = Path.home()
+    search_paths = [
+        # Python user scripts (pip install --user)
+        home / "AppData" / "Roaming" / "Python" / "Python313" / "Scripts" / f"yt-dlp{exe_suffix}",
+        home / "AppData" / "Roaming" / "Python" / "Python312" / "Scripts" / f"yt-dlp{exe_suffix}",
+        home / "AppData" / "Roaming" / "Python" / "Python311" / "Scripts" / f"yt-dlp{exe_suffix}",
+        home / "AppData" / "Local" / "Programs" / "Python" / "Python313" / "Scripts" / f"yt-dlp{exe_suffix}",
+        home / "AppData" / "Local" / "Programs" / "Python" / "Python312" / "Scripts" / f"yt-dlp{exe_suffix}",
+        # FrameWright bin directory
+        home / ".framewright" / "bin" / f"yt-dlp{exe_suffix}",
+        # Common Unix locations
+        Path("/usr/local/bin") / "yt-dlp",
+        home / ".local" / "bin" / "yt-dlp",
+    ]
+
+    for search_path in search_paths:
+        if search_path.exists():
+            return str(search_path)
+
+    return None
+
+
+# Cache yt-dlp path
+_ytdlp_path: Optional[str] = None
+
+
+def get_ytdlp_path() -> str:
+    """Get yt-dlp binary path, raising error if not found."""
+    global _ytdlp_path
+    if _ytdlp_path is None:
+        _ytdlp_path = _find_ytdlp_binary()
+    if _ytdlp_path is None:
+        raise FileNotFoundError("yt-dlp not found in PATH or common locations")
+    return _ytdlp_path
 
 
 @dataclass
@@ -112,6 +214,12 @@ from .processors.interpolation import FrameInterpolator, InterpolationError
 from .processors.analyzer import FrameAnalyzer, VideoAnalysis
 from .processors.adaptive_enhance import AdaptiveEnhancer, AdaptiveEnhanceResult
 from .processors.streaming import StreamingProcessor, StreamingConfig, ChunkInfo
+from .processors.ncnn_vulkan import (
+    NcnnVulkanBackend,
+    NcnnVulkanConfig,
+    get_ncnn_vulkan_path,
+    is_ncnn_vulkan_available,
+)
 
 
 # Configure logging
@@ -587,7 +695,7 @@ class VideoRestorer:
         logger.info(f"Downloading video from {url}")
 
         cmd = [
-            'yt-dlp',
+            get_ytdlp_path(),
             '--format', 'bestvideo[ext=webm]+bestaudio[ext=webm]/bestvideo[ext=mkv]+bestaudio[ext=mkv]/best',
             '--merge-output-format', 'mkv',
             '--output', str(output_path),
@@ -666,7 +774,7 @@ class VideoRestorer:
         logger.info(f"Analyzing metadata for {video_path}")
 
         cmd = [
-            'ffprobe',
+            get_ffprobe_path(),
             '-v', 'quiet',
             '-print_format', 'json',
             '-show_format',
@@ -760,7 +868,7 @@ class VideoRestorer:
         logger.info(f"Extracting audio to {output_path}")
 
         cmd = [
-            'ffmpeg',
+            get_ffmpeg_path(),
             '-i', str(video_path),
             '-vn',  # No video
             '-acodec', 'pcm_s24le',  # PCM 24-bit little-endian
@@ -823,7 +931,7 @@ class VideoRestorer:
         output_pattern = self.config.frames_dir / "frame_%08d.png"
 
         cmd = [
-            'ffmpeg',
+            get_ffmpeg_path(),
             '-i', str(video_path),
             '-qscale:v', '1',  # Highest quality
             '-qmin', '1',
@@ -874,13 +982,38 @@ class VideoRestorer:
         except subprocess.TimeoutExpired:
             raise FrameExtractionError("Frame extraction timed out")
 
+    def _get_ncnn_vulkan_binary(self) -> Optional[Path]:
+        """Get the path to the ncnn-vulkan binary.
+
+        Searches in order:
+        1. System PATH
+        2. ~/.framewright/bin/
+        3. Project bin/ directory
+
+        Returns:
+            Path to binary or None if not found
+        """
+        ncnn_path = get_ncnn_vulkan_path()
+        if ncnn_path:
+            return ncnn_path
+
+        # Fallback: check if it's in PATH directly
+        binary = shutil.which("realesrgan-ncnn-vulkan")
+        if binary:
+            return Path(binary)
+
+        return None
+
     def _enhance_single_frame(
         self,
         input_path: Path,
         output_dir: Path,
         tile_size: int
     ) -> Tuple[Path, bool, Optional[str]]:
-        """Enhance a single frame with Real-ESRGAN.
+        """Enhance a single frame with Real-ESRGAN using ncnn-vulkan.
+
+        Automatically finds the ncnn-vulkan binary in common locations,
+        supporting AMD, Intel, and NVIDIA GPUs via Vulkan.
 
         Args:
             input_path: Path to input frame
@@ -892,8 +1025,19 @@ class VideoRestorer:
         """
         output_path = output_dir / input_path.name
 
+        # Find the ncnn-vulkan binary
+        ncnn_binary = self._get_ncnn_vulkan_binary()
+        if not ncnn_binary:
+            return output_path, False, (
+                "realesrgan-ncnn-vulkan not found. "
+                "Install it with: python -c \"from framewright.processors.ncnn_vulkan import install_ncnn_vulkan; install_ncnn_vulkan()\""
+            )
+
+        # Get model directory (bundled with ncnn-vulkan)
+        model_dir = ncnn_binary.parent / "models"
+
         cmd = [
-            'realesrgan-ncnn-vulkan',
+            str(ncnn_binary),
             '-i', str(input_path),
             '-o', str(output_path),
             '-n', self.config.model_name,
@@ -901,16 +1045,26 @@ class VideoRestorer:
             '-f', 'png'
         ]
 
+        # Add model path if it exists
+        if model_dir.exists():
+            cmd.extend(['-m', str(model_dir)])
+
         if tile_size > 0:
             cmd.extend(['-t', str(tile_size)])
 
         try:
+            # Use CREATE_NO_WINDOW on Windows to avoid console popups
+            creationflags = 0
+            if hasattr(subprocess, 'CREATE_NO_WINDOW'):
+                creationflags = subprocess.CREATE_NO_WINDOW
+
             result = subprocess.run(
                 cmd,
                 check=True,
                 capture_output=True,
                 text=True,
-                timeout=300  # 5 minute timeout per frame
+                timeout=300,  # 5 minute timeout per frame
+                creationflags=creationflags,
             )
 
             # Validate output
@@ -1102,6 +1256,18 @@ class VideoRestorer:
                     raise EnhancementError(
                         f"Failed to enhance frame {frame_path.name}: {error_msg}"
                     )
+                else:
+                    # Copy original frame to output when enhancement fails
+                    # This ensures the video can still be assembled
+                    try:
+                        shutil.copy2(frame_path, output_path)
+                        logger.warning(
+                            f"Frame {frame_path.name} enhancement failed, using original. "
+                            f"Error: {error_msg}"
+                        )
+                        enhanced_count += 1  # Count as processed (with original)
+                    except Exception as copy_err:
+                        logger.error(f"Could not copy original frame: {copy_err}")
 
             # Update progress with frame counts for ETA calculation
             frames_completed = i + 1
@@ -1246,6 +1412,17 @@ class VideoRestorer:
                                 raise EnhancementError(
                                     f"Failed to enhance frame {frame_path.name}: {error_msg}"
                                 )
+                            else:
+                                # Copy original frame to output when enhancement fails
+                                try:
+                                    shutil.copy2(frame_path, output_path)
+                                    logger.warning(
+                                        f"Frame {frame_path.name} enhancement failed, using original. "
+                                        f"Error: {error_msg}"
+                                    )
+                                    enhanced_count += 1  # Count as processed
+                                except Exception as copy_err:
+                                    logger.error(f"Could not copy original frame: {copy_err}")
 
                         # Check disk space periodically
                         if completed % 100 == 0:
@@ -1614,7 +1791,7 @@ class VideoRestorer:
         input_pattern = frames_dir / "frame_%08d.png"
 
         cmd = [
-            'ffmpeg',
+            get_ffmpeg_path(),
             '-framerate', str(framerate),
             '-i', str(input_pattern),
         ]

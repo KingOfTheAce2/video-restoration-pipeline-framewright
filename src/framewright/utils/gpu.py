@@ -1,17 +1,28 @@
 """GPU and VRAM monitoring utilities for FrameWright.
 
 Provides VRAM monitoring, adaptive tile sizing, and GPU capability detection.
+Supports NVIDIA (CUDA), AMD (Vulkan/ROCm), and Intel (Vulkan) GPUs.
 """
 import logging
 import math
+import platform
 import re
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+class GPUVendor(Enum):
+    """GPU vendor identification."""
+    NVIDIA = "nvidia"
+    AMD = "amd"
+    INTEL = "intel"
+    UNKNOWN = "unknown"
 
 
 @dataclass
@@ -24,6 +35,10 @@ class GPUInfo:
     free_memory_mb: int
     utilization_percent: float
     temperature_celsius: Optional[float] = None
+    vendor: GPUVendor = GPUVendor.UNKNOWN
+    driver_version: str = ""
+    vulkan_supported: bool = False
+    cuda_supported: bool = False
 
     @property
     def memory_usage_percent(self) -> float:
@@ -32,10 +47,200 @@ class GPUInfo:
             return 0.0
         return (self.used_memory_mb / self.total_memory_mb) * 100
 
+    @property
+    def is_dedicated(self) -> bool:
+        """Check if this is a dedicated GPU (not integrated)."""
+        integrated_keywords = ["uhd", "iris", "integrated", "igpu", "vega 8", "vega 6"]
+        name_lower = self.name.lower()
+        return not any(kw in name_lower for kw in integrated_keywords)
+
 
 def is_nvidia_gpu_available() -> bool:
     """Check if nvidia-smi is available."""
     return shutil.which("nvidia-smi") is not None
+
+
+def _detect_vendor(gpu_name: str) -> GPUVendor:
+    """Detect GPU vendor from device name."""
+    name_lower = gpu_name.lower()
+    if any(kw in name_lower for kw in ["nvidia", "geforce", "quadro", "tesla", "rtx", "gtx"]):
+        return GPUVendor.NVIDIA
+    elif any(kw in name_lower for kw in ["amd", "radeon", "rx ", "vega", "navi"]):
+        return GPUVendor.AMD
+    elif any(kw in name_lower for kw in ["intel", "uhd", "iris", "arc"]):
+        return GPUVendor.INTEL
+    return GPUVendor.UNKNOWN
+
+
+def get_windows_gpu_info() -> List[GPUInfo]:
+    """Get GPU information on Windows via WMI.
+
+    Detects AMD, Intel, and NVIDIA GPUs using Windows Management Instrumentation.
+
+    Returns:
+        List of GPUInfo for all detected GPUs
+    """
+    if platform.system() != "Windows":
+        return []
+
+    gpus = []
+
+    try:
+        # Use PowerShell to query WMI for video controllers
+        cmd = [
+            "powershell", "-Command",
+            "Get-WmiObject Win32_VideoController | "
+            "Select-Object Name, AdapterRAM, DriverVersion, PNPDeviceID | "
+            "ConvertTo-Json"
+        ]
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
+        )
+
+        if result.returncode != 0:
+            logger.warning(f"WMI query failed: {result.stderr}")
+            return []
+
+        import json
+        data = json.loads(result.stdout)
+
+        # Handle single GPU (returns dict) vs multiple (returns list)
+        if isinstance(data, dict):
+            data = [data]
+
+        for idx, gpu_data in enumerate(data):
+            name = gpu_data.get("Name", "Unknown GPU")
+
+            # Skip Microsoft Basic Display Adapter (virtual)
+            if "basic display" in name.lower() or "microsoft" in name.lower():
+                continue
+
+            # AdapterRAM is in bytes, convert to MB
+            ram_bytes = gpu_data.get("AdapterRAM", 0)
+            if ram_bytes is None:
+                ram_bytes = 0
+            # Handle potential overflow (WMI reports 4GB+ as negative or wrapped)
+            if ram_bytes < 0:
+                ram_bytes = 4294967296 + ram_bytes  # 2^32 + negative value
+            total_mb = int(ram_bytes / (1024 * 1024))
+
+            vendor = _detect_vendor(name)
+            driver = gpu_data.get("DriverVersion", "")
+
+            # For non-NVIDIA, we can't easily get used/free memory
+            # Estimate free as 90% of total (conservative)
+            estimated_free = int(total_mb * 0.9)
+
+            gpu = GPUInfo(
+                index=idx,
+                name=name,
+                total_memory_mb=total_mb,
+                used_memory_mb=total_mb - estimated_free,
+                free_memory_mb=estimated_free,
+                utilization_percent=0.0,  # Can't easily get this for AMD/Intel
+                vendor=vendor,
+                driver_version=driver,
+                vulkan_supported=(vendor in [GPUVendor.AMD, GPUVendor.INTEL, GPUVendor.NVIDIA]),
+                cuda_supported=(vendor == GPUVendor.NVIDIA),
+            )
+            gpus.append(gpu)
+            logger.debug(f"Detected GPU: {name} ({vendor.value}, {total_mb}MB)")
+
+        # Sort: dedicated GPUs first, then by VRAM
+        gpus.sort(key=lambda g: (not g.is_dedicated, -g.total_memory_mb))
+
+        # Re-index after sorting
+        for idx, gpu in enumerate(gpus):
+            gpu.index = idx
+
+        return gpus
+
+    except subprocess.TimeoutExpired:
+        logger.warning("WMI GPU query timed out")
+        return []
+    except json.JSONDecodeError as e:
+        logger.warning(f"Failed to parse WMI GPU data: {e}")
+        return []
+    except Exception as e:
+        logger.warning(f"Failed to get Windows GPU info: {e}")
+        return []
+
+
+def get_all_gpus_multivendor() -> List[GPUInfo]:
+    """Get all GPUs from all vendors (NVIDIA, AMD, Intel).
+
+    Combines NVIDIA-specific detection (nvidia-smi) with generic
+    Windows WMI detection for AMD/Intel GPUs.
+
+    Returns:
+        List of GPUInfo for all detected GPUs
+    """
+    all_gpus = []
+    nvidia_names = set()
+
+    # First, try NVIDIA-specific detection (more accurate for NVIDIA)
+    if is_nvidia_gpu_available():
+        nvidia_gpus = get_all_gpu_info()
+        for gpu in nvidia_gpus:
+            gpu.vendor = GPUVendor.NVIDIA
+            gpu.cuda_supported = True
+            gpu.vulkan_supported = True
+            all_gpus.append(gpu)
+            nvidia_names.add(gpu.name.lower())
+
+    # Then get Windows WMI GPUs (for AMD/Intel, or if nvidia-smi failed)
+    if platform.system() == "Windows":
+        wmi_gpus = get_windows_gpu_info()
+        for gpu in wmi_gpus:
+            # Skip if we already have this GPU from nvidia-smi
+            if gpu.name.lower() in nvidia_names:
+                continue
+            # Skip if it's NVIDIA and we already got NVIDIA GPUs
+            if gpu.vendor == GPUVendor.NVIDIA and nvidia_names:
+                continue
+            all_gpus.append(gpu)
+
+    # Re-index all GPUs
+    for idx, gpu in enumerate(all_gpus):
+        gpu.index = idx
+
+    return all_gpus
+
+
+def get_best_gpu() -> Optional[GPUInfo]:
+    """Get the best available GPU for processing.
+
+    Prioritizes: NVIDIA (CUDA) > AMD (Vulkan) > Intel (Vulkan)
+    Within each vendor, prioritizes by VRAM.
+
+    Returns:
+        Best GPUInfo or None if no GPU detected
+    """
+    gpus = get_all_gpus_multivendor()
+    if not gpus:
+        return None
+
+    # Priority: dedicated > integrated, then NVIDIA > AMD > Intel, then by VRAM
+    def gpu_priority(g: GPUInfo) -> Tuple:
+        vendor_priority = {
+            GPUVendor.NVIDIA: 0,
+            GPUVendor.AMD: 1,
+            GPUVendor.INTEL: 2,
+            GPUVendor.UNKNOWN: 3,
+        }
+        return (
+            not g.is_dedicated,  # Dedicated first (False < True)
+            vendor_priority.get(g.vendor, 3),
+            -g.total_memory_mb,  # More VRAM first
+        )
+
+    gpus.sort(key=gpu_priority)
+    return gpus[0]
 
 
 def get_gpu_memory_info(device_id: Optional[int] = None) -> Optional[Dict[str, int]]:

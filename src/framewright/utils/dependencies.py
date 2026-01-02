@@ -92,8 +92,85 @@ def compare_versions(version1: str, version2: str) -> int:
     return 0
 
 
+def _find_ffmpeg_binary(name: str) -> Optional[str]:
+    """Find ffmpeg/ffprobe binary in PATH or common locations."""
+    import platform
+
+    # Check PATH first
+    path = shutil.which(name)
+    if path:
+        return path
+
+    # Check common installation directories
+    exe_suffix = ".exe" if platform.system() == "Windows" else ""
+    search_paths = [
+        # Common Windows locations
+        Path("F:/ffmpeg-8.0.1-essentials_build/bin") / f"{name}{exe_suffix}",
+        Path("C:/ffmpeg/bin") / f"{name}{exe_suffix}",
+        Path.home() / "ffmpeg" / "bin" / f"{name}{exe_suffix}",
+        Path.home() / ".framewright" / "bin" / f"{name}{exe_suffix}",
+        # Common Unix locations
+        Path("/usr/local/bin") / name,
+        Path("/opt/homebrew/bin") / name,
+    ]
+
+    for search_path in search_paths:
+        if search_path.exists():
+            logger.info(f"Found {name} at: {search_path}")
+            return str(search_path)
+
+    return None
+
+
+# Cache paths for performance
+_ffmpeg_path_cache: Optional[str] = None
+_ffprobe_path_cache: Optional[str] = None
+
+
+def get_ffmpeg_path() -> str:
+    """Get ffmpeg binary path, raising error if not found.
+
+    Returns:
+        Path to ffmpeg executable
+
+    Raises:
+        FileNotFoundError: If ffmpeg is not found
+    """
+    global _ffmpeg_path_cache
+    if _ffmpeg_path_cache is None:
+        _ffmpeg_path_cache = _find_ffmpeg_binary("ffmpeg")
+    if _ffmpeg_path_cache is None:
+        raise FileNotFoundError(
+            "ffmpeg not found in PATH or common locations. "
+            "Please install FFmpeg or add it to PATH."
+        )
+    return _ffmpeg_path_cache
+
+
+def get_ffprobe_path() -> str:
+    """Get ffprobe binary path, raising error if not found.
+
+    Returns:
+        Path to ffprobe executable
+
+    Raises:
+        FileNotFoundError: If ffprobe is not found
+    """
+    global _ffprobe_path_cache
+    if _ffprobe_path_cache is None:
+        _ffprobe_path_cache = _find_ffmpeg_binary("ffprobe")
+    if _ffprobe_path_cache is None:
+        raise FileNotFoundError(
+            "ffprobe not found in PATH or common locations. "
+            "Please install FFmpeg or add it to PATH."
+        )
+    return _ffprobe_path_cache
+
+
 def check_ffmpeg() -> DependencyInfo:
     """Check FFmpeg installation and version.
+
+    Searches for ffmpeg in PATH and common installation directories.
 
     Returns:
         DependencyInfo for FFmpeg
@@ -104,17 +181,18 @@ def check_ffmpeg() -> DependencyInfo:
         minimum_version="4.0",
     )
 
-    path = shutil.which("ffmpeg")
+    path = _find_ffmpeg_binary("ffmpeg")
     if not path:
-        info.error_message = "ffmpeg not found in PATH"
+        info.error_message = "ffmpeg not found in PATH or common locations"
         return info
 
     info.path = path
+    info.command = path
     info.installed = True
 
     try:
         result = subprocess.run(
-            ["ffmpeg", "-version"],
+            [path, "-version"],
             capture_output=True,
             text=True,
             timeout=10
@@ -145,6 +223,8 @@ def check_ffmpeg() -> DependencyInfo:
 def check_ffprobe() -> DependencyInfo:
     """Check ffprobe installation.
 
+    Searches for ffprobe in PATH and common installation directories.
+
     Returns:
         DependencyInfo for ffprobe
     """
@@ -153,17 +233,18 @@ def check_ffprobe() -> DependencyInfo:
         command="ffprobe",
     )
 
-    path = shutil.which("ffprobe")
+    path = _find_ffmpeg_binary("ffprobe")
     if not path:
-        info.error_message = "ffprobe not found in PATH"
+        info.error_message = "ffprobe not found in PATH or common locations"
         return info
 
     info.path = path
+    info.command = path
     info.installed = True
 
     try:
         result = subprocess.run(
-            ["ffprobe", "-version"],
+            [path, "-version"],
             capture_output=True,
             text=True,
             timeout=10
@@ -182,15 +263,25 @@ def check_ffprobe() -> DependencyInfo:
 def check_realesrgan() -> DependencyInfo:
     """Check Real-ESRGAN installation.
 
+    Searches for realesrgan-ncnn-vulkan in:
+    1. System PATH
+    2. ~/.framewright/bin/ (custom install location)
+    3. Project bin/ directory
+
     Returns:
         DependencyInfo for Real-ESRGAN
     """
+    import platform
+
     info = DependencyInfo(
         name="Real-ESRGAN",
         command="realesrgan-ncnn-vulkan",
     )
 
-    # Try different command names
+    # Determine executable name based on platform
+    exe_suffix = ".exe" if platform.system() == "Windows" else ""
+
+    # Try different command names in PATH
     commands = [
         "realesrgan-ncnn-vulkan",
         "realesrgan",
@@ -205,8 +296,27 @@ def check_realesrgan() -> DependencyInfo:
             info.installed = True
             break
 
+    # If not in PATH, check common installation directories
     if not info.installed:
-        info.error_message = "Real-ESRGAN binary not found"
+        search_paths = [
+            Path.home() / ".framewright" / "bin" / f"realesrgan-ncnn-vulkan{exe_suffix}",
+            Path.cwd() / "bin" / f"realesrgan-ncnn-vulkan{exe_suffix}",
+        ]
+
+        for search_path in search_paths:
+            if search_path.exists():
+                info.path = str(search_path)
+                info.command = str(search_path)
+                info.installed = True
+                info.additional_info["install_location"] = "framewright"
+                logger.info(f"Found Real-ESRGAN at: {search_path}")
+                break
+
+    if not info.installed:
+        info.error_message = (
+            "Real-ESRGAN binary not found. Install with: "
+            "python -c \"from framewright.processors.ncnn_vulkan import install_ncnn_vulkan; install_ncnn_vulkan()\""
+        )
         return info
 
     try:
@@ -241,8 +351,46 @@ def check_realesrgan() -> DependencyInfo:
     return info
 
 
+def _find_ytdlp_binary() -> Optional[str]:
+    """Find yt-dlp binary in PATH or common locations."""
+    import platform
+    import os
+
+    # Check PATH first
+    path = shutil.which("yt-dlp")
+    if path:
+        return path
+
+    # Check common installation directories
+    exe_suffix = ".exe" if platform.system() == "Windows" else ""
+    home = Path.home()
+
+    search_paths = [
+        # Python user Scripts (pip install --user)
+        home / "AppData" / "Roaming" / "Python" / "Python313" / "Scripts" / f"yt-dlp{exe_suffix}",
+        home / "AppData" / "Roaming" / "Python" / "Python312" / "Scripts" / f"yt-dlp{exe_suffix}",
+        home / "AppData" / "Roaming" / "Python" / "Python311" / "Scripts" / f"yt-dlp{exe_suffix}",
+        home / "AppData" / "Local" / "Programs" / "Python" / "Python313" / "Scripts" / f"yt-dlp{exe_suffix}",
+        # System Python
+        Path("C:/Python313/Scripts") / f"yt-dlp{exe_suffix}",
+        Path("C:/Python312/Scripts") / f"yt-dlp{exe_suffix}",
+        # Unix locations
+        home / ".local" / "bin" / "yt-dlp",
+        Path("/usr/local/bin/yt-dlp"),
+    ]
+
+    for search_path in search_paths:
+        if search_path.exists():
+            logger.info(f"Found yt-dlp at: {search_path}")
+            return str(search_path)
+
+    return None
+
+
 def check_ytdlp() -> DependencyInfo:
     """Check yt-dlp installation.
+
+    Searches for yt-dlp in PATH and common installation directories.
 
     Returns:
         DependencyInfo for yt-dlp
@@ -253,17 +401,18 @@ def check_ytdlp() -> DependencyInfo:
         minimum_version="2023.0.0",
     )
 
-    path = shutil.which("yt-dlp")
+    path = _find_ytdlp_binary()
     if not path:
-        info.error_message = "yt-dlp not found in PATH"
+        info.error_message = "yt-dlp not found. Install with: pip install yt-dlp"
         return info
 
     info.path = path
+    info.command = path
     info.installed = True
 
     try:
         result = subprocess.run(
-            ["yt-dlp", "--version"],
+            [path, "--version"],
             capture_output=True,
             text=True,
             timeout=10

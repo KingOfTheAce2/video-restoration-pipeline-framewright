@@ -20,11 +20,61 @@ from typing import Optional, List, Callable, Any, Dict
 from datetime import datetime, date
 import json
 import logging
+import platform
 import subprocess
 import shutil
 import re
 
 logger = logging.getLogger(__name__)
+
+
+def _find_ytdlp_binary() -> Optional[str]:
+    """Find yt-dlp binary in PATH or common locations.
+
+    Returns:
+        Path to yt-dlp binary or None if not found
+    """
+    # Check PATH first
+    path = shutil.which("yt-dlp")
+    if path:
+        return path
+
+    # Check common installation directories
+    exe_suffix = ".exe" if platform.system() == "Windows" else ""
+    home = Path.home()
+
+    search_paths = [
+        # Python user Scripts (pip install --user)
+        home / "AppData" / "Roaming" / "Python" / "Python313" / "Scripts" / f"yt-dlp{exe_suffix}",
+        home / "AppData" / "Roaming" / "Python" / "Python312" / "Scripts" / f"yt-dlp{exe_suffix}",
+        home / "AppData" / "Roaming" / "Python" / "Python311" / "Scripts" / f"yt-dlp{exe_suffix}",
+        home / "AppData" / "Local" / "Programs" / "Python" / "Python313" / "Scripts" / f"yt-dlp{exe_suffix}",
+        # System Python
+        Path("C:/Python313/Scripts") / f"yt-dlp{exe_suffix}",
+        Path("C:/Python312/Scripts") / f"yt-dlp{exe_suffix}",
+        # Unix locations
+        home / ".local" / "bin" / "yt-dlp",
+        Path("/usr/local/bin/yt-dlp"),
+    ]
+
+    for search_path in search_paths:
+        if search_path.exists():
+            logger.info(f"Found yt-dlp at: {search_path}")
+            return str(search_path)
+
+    return None
+
+
+# Cache the yt-dlp path
+_ytdlp_path: Optional[str] = None
+
+
+def get_ytdlp_path() -> Optional[str]:
+    """Get cached yt-dlp path."""
+    global _ytdlp_path
+    if _ytdlp_path is None:
+        _ytdlp_path = _find_ytdlp_binary()
+    return _ytdlp_path
 
 
 @dataclass
@@ -332,7 +382,7 @@ class YouTubeDownloader:
         Returns:
             True if yt-dlp is available, False otherwise
         """
-        return shutil.which("yt-dlp") is not None
+        return get_ytdlp_path() is not None
 
     def _get_base_command(self) -> List[str]:
         """Get base yt-dlp command with common options.
@@ -340,7 +390,11 @@ class YouTubeDownloader:
         Returns:
             Base command list with common options
         """
-        cmd = ["yt-dlp", "--no-warnings", "--no-check-certificates"]
+        ytdlp_path = get_ytdlp_path()
+        if not ytdlp_path:
+            raise FileNotFoundError("yt-dlp not found")
+
+        cmd = [ytdlp_path, "--no-warnings", "--no-check-certificates"]
 
         if self.cookies_file and self.cookies_file.exists():
             cmd.extend(["--cookies", str(self.cookies_file)])

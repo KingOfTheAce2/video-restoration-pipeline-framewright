@@ -448,7 +448,6 @@ if HAS_GRADIO:
 
                         result = restorer.restore_video(
                             source=item.source,
-                            enhance_audio=enhance_audio,
                             cleanup=False,
                         )
 
@@ -497,48 +496,75 @@ if HAS_GRADIO:
             Returns:
                 Tuple of (output_video_path, log_messages)
             """
+            import time
             logs = []
+            start_time = time.time()
 
             def log(msg: str):
-                logs.append(msg)
+                elapsed = time.time() - start_time
+                timestamp = f"[{elapsed:6.1f}s]"
+                logs.append(f"{timestamp} {msg}")
                 logger.info(msg)
 
+            def log_section(title: str):
+                logs.append(f"\n{'='*50}")
+                logs.append(f"  {title}")
+                logs.append(f"{'='*50}")
+
             try:
+                log_section("FRAMEWRIGHT VIDEO RESTORATION")
+
                 # Determine input source
                 if youtube_url and youtube_url.strip():
                     source = youtube_url.strip()
-                    log(f"📥 Downloading from: {source}")
+                    log(f"Source: YouTube URL")
+                    log(f"  URL: {source}")
                 elif input_video:
                     source = input_video
-                    log(f"📁 Using local file: {source}")
+                    log(f"Source: Local file")
+                    log(f"  Path: {source}")
                 else:
-                    return None, "❌ Please provide a video file or YouTube URL"
+                    return None, "Please provide a video file or YouTube URL"
 
                 # Determine output directory
                 if output_folder and output_folder.strip():
                     output_dir = Path(output_folder.strip())
                     output_dir.mkdir(parents=True, exist_ok=True)
-                    log(f"📂 Output directory: {output_dir}")
+                    log(f"Output: {output_dir}")
                 else:
                     output_dir = Path(tempfile.mkdtemp(prefix="framewright_"))
-                    log(f"📂 Working directory: {output_dir}")
+                    log(f"Working directory: {output_dir}")
 
-                # Determine output format
+                # Log settings summary
+                log_section("SETTINGS")
                 fmt = output_format if output_format else "mkv"
-                log(f"📦 Output format: {fmt.upper()}")
+                log(f"Upscale: {scale_factor}x")
+                log(f"AI Model: {model}")
+                log(f"Quality (CRF): {crf}")
+                log(f"Output format: {fmt.upper()}")
 
                 # Configure
                 model_dir = None
                 if model_download_dir and model_download_dir.strip():
                     model_dir = Path(model_download_dir.strip()).expanduser()
-                    log(f"📦 Model download location: {model_dir}")
+                    log(f"Model location: {model_dir}")
 
-                # Log new feature settings
+                # Log feature settings
+                features = []
+                if enhance_audio:
+                    features.append("Audio enhancement")
+                if interpolate:
+                    features.append(f"Frame interpolation ({target_fps} fps)")
                 if enable_colorization:
-                    log(f"🎨 Colorization enabled: {colorization_model}")
+                    features.append(f"Colorization ({colorization_model})")
                 if enable_watermark_removal:
                     detect_mode = "auto-detect" if watermark_auto_detect else "manual"
-                    log(f"🚫 Watermark removal enabled: {detect_mode}")
+                    features.append(f"Watermark removal ({detect_mode})")
+
+                if features:
+                    log(f"Features: {', '.join(features)}")
+                else:
+                    log(f"Features: Standard restoration only")
 
                 config = Config(
                     project_dir=output_dir,
@@ -556,33 +582,56 @@ if HAS_GRADIO:
                     watermark_auto_detect=watermark_auto_detect,
                 )
 
-                # Progress callback
+                # Progress callback with detailed logging
+                last_stage = [None]
                 def on_progress(current: int, total: int, stage: str):
+                    pct = (current / total * 100) if total > 0 else 0
                     progress((current / total) if total > 0 else 0, desc=stage)
-                    log(f"  {stage}: {current}/{total}")
+                    if stage != last_stage[0]:
+                        log_section(stage.upper())
+                        last_stage[0] = stage
+                    log(f"  Progress: {current}/{total} ({pct:.1f}%)")
 
                 # Create restorer
-                log("🔧 Initializing pipeline...")
+                log_section("INITIALIZATION")
+                log(f"Initializing video restorer...")
                 restorer = VideoRestorer(config)
+                log(f"Pipeline ready")
 
                 # Run restoration
-                log("🎬 Starting restoration...")
-                progress(0.1, desc="Downloading/Loading video")
+                log_section("PROCESSING")
+                log(f"Starting video restoration...")
+                progress(0.05, desc="Starting...")
 
                 result = restorer.restore_video(
                     source=source,
-                    enhance_audio=enhance_audio,
                     cleanup=False,
                 )
 
-                log(f"✅ Restoration complete!")
-                log(f"📹 Output: {result}")
+                # Final summary
+                elapsed_total = time.time() - start_time
+                log_section("COMPLETE")
+                log(f"Restoration finished successfully!")
+                log(f"Total time: {elapsed_total:.1f} seconds ({elapsed_total/60:.1f} min)")
+                log(f"Output file: {result}")
 
                 return str(result), "\n".join(logs)
 
             except Exception as e:
+                import traceback
                 error_msg = f"❌ Error: {e}"
                 logs.append(error_msg)
+                logs.append("")
+                logs.append("─" * 50)
+                logs.append("  DETAILED ERROR INFO")
+                logs.append("─" * 50)
+                logs.append(f"  Type: {type(e).__name__}")
+                logs.append(f"  Message: {e}")
+                # Add traceback for debugging
+                tb_lines = traceback.format_exc().split('\n')
+                for line in tb_lines:
+                    if line.strip():
+                        logs.append(f"  {line}")
                 logger.exception("Restoration failed")
                 return None, "\n".join(logs)
 
@@ -722,7 +771,14 @@ if HAS_GRADIO:
                                 choices=[2, 4],
                                 value=4,
                                 label="Upscale Factor",
-                                info="4x for heavily degraded, 2x for mild enhancement",
+                                info="4x: Old/degraded footage (480p->4K) | 2x: Newer video or mild enhancement",
+                            )
+
+                            gr.Markdown(
+                                """
+*Upscale guide: 4x turns 480p into ~4K, 2x turns 480p into ~1080p. Use 2x if your source is already decent quality.*
+                                """,
+                                elem_classes=["info-text"]
                             )
 
                             gr.Markdown(
@@ -753,7 +809,7 @@ if HAS_GRADIO:
                                 value=18,
                                 step=1,
                                 label="Quality (CRF)",
-                                info="Lower = better quality, larger file",
+                                info="15-18: Archival | 19-22: High quality | 23: FFmpeg default | 24-28: Smaller files",
                             )
 
                             enhance_audio = gr.Checkbox(
@@ -772,22 +828,37 @@ if HAS_GRADIO:
                                 interpolate = gr.Checkbox(
                                     value=False,
                                     label="Frame Interpolation (RIFE)",
-                                    info="Increase frame rate (requires RIFE)",
+                                    info="Smoothly increase frame rate using AI",
                                 )
 
                                 target_fps = gr.Slider(
-                                    minimum=24,
+                                    minimum=18,
                                     maximum=60,
-                                    value=60,
+                                    value=24,
                                     step=6,
                                     label="Target FPS",
                                     visible=False,
                                 )
 
+                                fps_guide = gr.Markdown(
+                                    """
+**FPS Guide for Historical Footage:**
+| Era | Original FPS | Recommended Target |
+|-----|--------------|-------------------|
+| 1890s-1920s (Silent films) | 12-18 fps | **24 fps** - natural smoothing |
+| 1920s-1950s (Early talkies) | 18-24 fps | **24-30 fps** - subtle improvement |
+| 1950s-1980s (TV/Film) | 24-30 fps | **30 fps** - standard |
+| Modern footage | 24-60 fps | **30-60 fps** - if needed |
+
+*Tip: For old films, 24 fps is usually ideal. 60 fps can look unnaturally smooth ("soap opera effect") for vintage footage.*
+                                    """,
+                                    visible=False,
+                                )
+
                                 interpolate.change(
-                                    fn=lambda x: gr.update(visible=x),
+                                    fn=lambda x: [gr.update(visible=x), gr.update(visible=x)],
                                     inputs=interpolate,
-                                    outputs=target_fps,
+                                    outputs=[target_fps, fps_guide],
                                 )
 
                                 gr.Markdown("---")

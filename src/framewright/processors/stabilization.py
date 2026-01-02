@@ -39,6 +39,8 @@ from typing import Callable, List, Optional, Tuple, Union
 
 import numpy as np
 
+from framewright.utils.dependencies import get_ffmpeg_path
+
 logger = logging.getLogger(__name__)
 
 
@@ -576,7 +578,11 @@ class VideoStabilizer:
     def _check_ffmpeg(self) -> bool:
         """Check if FFmpeg is available."""
         if self._ffmpeg_available is None:
-            self._ffmpeg_available = shutil.which("ffmpeg") is not None
+            try:
+                get_ffmpeg_path()
+                self._ffmpeg_available = True
+            except FileNotFoundError:
+                self._ffmpeg_available = False
         return self._ffmpeg_available
 
     def _check_vidstab(self) -> bool:
@@ -587,7 +593,7 @@ class VideoStabilizer:
             else:
                 try:
                     result = subprocess.run(
-                        ["ffmpeg", "-filters"],
+                        [get_ffmpeg_path(), "-filters"],
                         capture_output=True,
                         text=True,
                         timeout=10,
@@ -1126,7 +1132,7 @@ class VideoStabilizer:
             # Phase 1: Detect motion (vidstabdetect)
             logger.info("Phase 1: Running vidstabdetect...")
             detect_cmd = [
-                "ffmpeg", "-y", "-i", str(input_path),
+                get_ffmpeg_path(), "-y", "-i", str(input_path),
                 "-vf", f"vidstabdetect=shakiness={shakiness}:accuracy={accuracy}:result={transforms_file}",
                 "-f", "null", "-"
             ]
@@ -1175,7 +1181,7 @@ class VideoStabilizer:
             transform_filter = f"vidstabtransform={':'.join(transform_opts)}"
 
             transform_cmd = [
-                "ffmpeg", "-y", "-i", str(input_path),
+                get_ffmpeg_path(), "-y", "-i", str(input_path),
                 "-vf", transform_filter,
                 "-c:a", "copy",  # Copy audio
                 str(output_path)
@@ -1304,7 +1310,7 @@ class VideoStabilizer:
             pattern = frames_dir / "%08d.png"
 
         cmd = [
-            "ffmpeg", "-y",
+            get_ffmpeg_path(), "-y",
             "-framerate", str(fps),
             "-i", str(pattern),
             "-c:v", "libx264",
@@ -1337,7 +1343,7 @@ class VideoStabilizer:
         pattern = output_dir / "frame_%08d.png"
 
         cmd = [
-            "ffmpeg", "-y",
+            get_ffmpeg_path(), "-y",
             "-i", str(video_path),
             "-qscale:v", "2",
             str(pattern)
@@ -1367,7 +1373,7 @@ class VideoStabilizer:
 
         try:
             cmd = [
-                "ffmpeg", "-y",
+                get_ffmpeg_path(), "-y",
                 "-i", str(target_video),
                 "-i", str(source_video),
                 "-c:v", "copy",

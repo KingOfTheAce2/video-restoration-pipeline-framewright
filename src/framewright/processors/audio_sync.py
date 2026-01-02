@@ -39,6 +39,8 @@ from typing import Callable, Dict, List, Optional, Tuple, Any, Union
 
 import numpy as np
 
+from framewright.utils.dependencies import get_ffmpeg_path, get_ffprobe_path
+
 logger = logging.getLogger(__name__)
 
 
@@ -179,11 +181,13 @@ class AudioSyncDetector:
 
     def _verify_ffmpeg(self) -> None:
         """Verify FFmpeg is available."""
-        if not shutil.which("ffmpeg"):
+        try:
+            get_ffmpeg_path()
+        except FileNotFoundError as e:
             raise AudioSyncError(
                 "FFmpeg is not installed or not in PATH. "
                 "Please install FFmpeg for audio sync detection."
-            )
+            ) from e
 
     def _check_scipy(self) -> bool:
         """Check if scipy is available."""
@@ -220,7 +224,7 @@ class AudioSyncDetector:
             AudioSyncError: If extraction fails.
         """
         command = [
-            "ffmpeg", "-y",
+            get_ffmpeg_path(), "-y",
             "-i", str(input_path),
             "-vn",  # No video
             "-acodec", "pcm_s16le",
@@ -257,7 +261,7 @@ class AudioSyncDetector:
 
         # Fallback: use FFmpeg to extract raw samples
         command = [
-            "ffmpeg",
+            get_ffmpeg_path(),
             "-i", str(audio_path),
             "-f", "f32le",
             "-acodec", "pcm_f32le",
@@ -293,7 +297,7 @@ class AudioSyncDetector:
 
         # Get basic info via ffprobe
         command = [
-            "ffprobe", "-v", "quiet",
+            get_ffprobe_path(), "-v", "quiet",
             "-print_format", "json",
             "-show_format", "-show_streams",
             str(audio_path)
@@ -491,7 +495,7 @@ class AudioSyncDetector:
         """
         # Use silencedetect to find non-silent segments (onsets)
         command = [
-            "ffmpeg",
+            get_ffmpeg_path(),
             "-i", str(audio_path),
             "-af", "silencedetect=noise=-40dB:d=0.05",
             "-f", "null", "-"
@@ -584,7 +588,7 @@ class AudioSyncDetector:
             List of scene change timestamps.
         """
         command = [
-            "ffmpeg",
+            get_ffmpeg_path(),
             "-i", str(video_path),
             "-vf", "select='gt(scene,0.3)',showinfo",
             "-f", "null", "-"
@@ -622,7 +626,7 @@ class AudioSyncDetector:
         """
         # Use FFmpeg to extract motion data
         command = [
-            "ffmpeg",
+            get_ffmpeg_path(),
             "-i", str(video_path),
             "-vf", "mestimate=epzs,codecview=mv=pf+bf+bb",
             "-f", "null", "-"
@@ -631,7 +635,7 @@ class AudioSyncDetector:
         # For simpler approach, use frame difference magnitude
         # This is a simplified implementation using select filter
         command = [
-            "ffmpeg",
+            get_ffmpeg_path(),
             "-i", str(video_path),
             "-vf", "select='gt(scene,0.1)',showinfo",
             "-f", "null", "-"
@@ -898,14 +902,16 @@ class AudioSyncCorrector:
 
     def _verify_ffmpeg(self) -> None:
         """Verify FFmpeg is available with required filters."""
-        if not shutil.which("ffmpeg"):
+        try:
+            ffmpeg = get_ffmpeg_path()
+        except FileNotFoundError as e:
             raise AudioSyncError(
                 "FFmpeg is not installed. Required for audio sync correction."
-            )
+            ) from e
 
         # Check for required filters
         result = subprocess.run(
-            ["ffmpeg", "-filters"],
+            [ffmpeg, "-filters"],
             capture_output=True,
             text=True,
             timeout=30
@@ -919,7 +925,7 @@ class AudioSyncCorrector:
     def _check_rubberband(self) -> bool:
         """Check if rubberband is available for high-quality time stretching."""
         result = subprocess.run(
-            ["ffmpeg", "-filters"],
+            [get_ffmpeg_path(), "-filters"],
             capture_output=True,
             text=True,
             timeout=30
@@ -934,7 +940,7 @@ class AudioSyncCorrector:
     def _get_audio_duration(self, audio_path: Path) -> float:
         """Get audio duration in seconds."""
         command = [
-            "ffprobe", "-v", "quiet",
+            get_ffprobe_path(), "-v", "quiet",
             "-print_format", "json",
             "-show_format",
             str(audio_path)
@@ -1004,7 +1010,7 @@ class AudioSyncCorrector:
             filter_str = f"atrim=start={trim_seconds}"
 
         command = [
-            "ffmpeg", "-y",
+            get_ffmpeg_path(), "-y",
             "-i", str(audio_path),
             "-af", filter_str,
             "-ar", "48000",
@@ -1224,7 +1230,7 @@ class AudioSyncCorrector:
             filter_str = ",".join(filter_parts) if filter_parts else "anull"
 
         command = [
-            "ffmpeg", "-y",
+            get_ffmpeg_path(), "-y",
             "-i", str(audio_path),
             "-af", filter_str,
             "-ar", "48000",

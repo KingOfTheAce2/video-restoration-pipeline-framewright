@@ -144,7 +144,7 @@ class Config:
     max_retries: int = 3
     retry_delay: float = 1.0
     parallel_frames: int = 1
-    continue_on_error: bool = False
+    continue_on_error: bool = True  # Continue processing even if some frames fail
 
     # GPU selection and multi-GPU distribution options
     gpu_id: Optional[int] = None  # Select specific GPU by index (--gpu N), None = auto-select

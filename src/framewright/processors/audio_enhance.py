@@ -44,6 +44,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple, Any
 
+from framewright.utils.dependencies import get_ffmpeg_path, get_ffprobe_path
+
 logger = logging.getLogger(__name__)
 
 
@@ -229,15 +231,14 @@ class TraditionalAudioEnhancer:
 
     def _verify_ffmpeg(self) -> None:
         """Verify FFmpeg is available with required filters."""
-        if not shutil.which("ffmpeg"):
-            raise AudioEnhanceError(
-                "FFmpeg is not installed or not in PATH. "
-                "Please install FFmpeg to use audio enhancement."
-            )
+        try:
+            ffmpeg = get_ffmpeg_path()
+        except FileNotFoundError as e:
+            raise AudioEnhanceError(str(e)) from e
 
         try:
             result = subprocess.run(
-                ["ffmpeg", "-filters"],
+                [ffmpeg, "-filters"],
                 capture_output=True,
                 text=True,
                 timeout=30
@@ -357,7 +358,7 @@ class TraditionalAudioEnhancer:
         filter_str = f"afftdn=nr={nr_amount}:nf={noise_floor}:tn=1"
 
         command = [
-            "ffmpeg", "-y",
+            get_ffmpeg_path(), "-y",
             "-i", str(audio_path),
             "-af", filter_str,
             "-ar", "48000",
@@ -407,7 +408,7 @@ class TraditionalAudioEnhancer:
         filter_str = ",".join(filters)
 
         command = [
-            "ffmpeg", "-y",
+            get_ffmpeg_path(), "-y",
             "-i", str(audio_path),
             "-af", filter_str,
             "-ar", "48000",
@@ -456,7 +457,7 @@ class TraditionalAudioEnhancer:
         )
 
         command = [
-            "ffmpeg", "-y",
+            get_ffmpeg_path(), "-y",
             "-i", str(audio_path),
             "-af", filter_str,
             "-ar", "48000",
@@ -490,7 +491,7 @@ class TraditionalAudioEnhancer:
 
         # declip filter with default settings
         command = [
-            "ffmpeg", "-y",
+            get_ffmpeg_path(), "-y",
             "-i", str(audio_path),
             "-af", "adeclip=window=55:overlap=75:arorder=8:threshold=10",
             "-ar", "48000",
@@ -542,7 +543,7 @@ class TraditionalAudioEnhancer:
         filter_str = ",".join(filters)
 
         command = [
-            "ffmpeg", "-y",
+            get_ffmpeg_path(), "-y",
             "-i", str(audio_path),
             "-af", filter_str,
             "-ar", "48000",
@@ -589,7 +590,7 @@ class TraditionalAudioEnhancer:
         )
 
         command = [
-            "ffmpeg", "-y",
+            get_ffmpeg_path(), "-y",
             "-i", str(audio_path),
             "-af", filter_str,
             "-ar", "48000",
@@ -953,10 +954,12 @@ class AudioAnalyzer:
 
     def _verify_ffmpeg(self) -> None:
         """Verify FFmpeg is available."""
-        if not shutil.which("ffmpeg"):
+        try:
+            get_ffmpeg_path()
+        except FileNotFoundError as e:
             raise AudioEnhanceError(
                 "FFmpeg is required for audio analysis"
-            )
+            ) from e
 
     def _run_ffmpeg_analysis(
         self,
@@ -966,7 +969,7 @@ class AudioAnalyzer:
     ) -> str:
         """Run FFmpeg analysis filter and capture output."""
         command = [
-            "ffmpeg", "-i", str(audio_path),
+            get_ffmpeg_path(), "-i", str(audio_path),
             "-af", filter_name,
             "-f", "null", "-"
         ]
@@ -986,7 +989,7 @@ class AudioAnalyzer:
     def _get_audio_info(self, audio_path: str) -> Dict[str, Any]:
         """Get basic audio file information using ffprobe."""
         command = [
-            "ffprobe", "-v", "quiet",
+            get_ffprobe_path(), "-v", "quiet",
             "-print_format", "json",
             "-show_format", "-show_streams",
             str(audio_path)

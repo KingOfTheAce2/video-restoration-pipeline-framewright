@@ -11,7 +11,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .utils.gpu import get_all_gpu_info, get_gpu_memory_info, is_nvidia_gpu_available
+from .utils.gpu import (
+    get_all_gpu_info,
+    get_all_gpus_multivendor,
+    get_best_gpu,
+    get_gpu_memory_info,
+    is_nvidia_gpu_available,
+    GPUVendor,
+)
 from .utils.disk import get_disk_usage
 from .utils.dependencies import (
     validate_all_dependencies,
@@ -44,13 +51,17 @@ class GPUCapability:
     """GPU capability assessment."""
     has_gpu: bool = False
     gpu_name: str = "None detected"
+    gpu_vendor: str = "unknown"  # nvidia, amd, intel, unknown
     vram_total_mb: int = 0
     vram_free_mb: int = 0
     cuda_available: bool = False
     vulkan_available: bool = False
+    ncnn_vulkan_available: bool = False  # For AMD/Intel GPU acceleration
     recommended_tile_size: int = 512
     max_resolution: str = "1080p"
     can_process_4k: bool = False
+    driver_version: str = ""
+    all_gpus: List[Dict[str, Any]] = field(default_factory=list)  # Info about all detected GPUs
 
 
 @dataclass
@@ -157,65 +168,110 @@ def get_system_info() -> SystemInfo:
     return info
 
 
+def _check_ncnn_vulkan_available() -> bool:
+    """Check if realesrgan-ncnn-vulkan binary is available."""
+    # Check common locations
+    ncnn_names = [
+        "realesrgan-ncnn-vulkan",
+        "realesrgan-ncnn-vulkan.exe",
+    ]
+
+    for name in ncnn_names:
+        if shutil.which(name):
+            return True
+
+    # Check in ~/.framewright/bin
+    home = Path.home()
+    bin_paths = [
+        home / ".framewright" / "bin" / "realesrgan-ncnn-vulkan.exe",
+        home / ".framewright" / "bin" / "realesrgan-ncnn-vulkan",
+        Path.cwd() / "bin" / "realesrgan-ncnn-vulkan.exe",
+    ]
+
+    for path in bin_paths:
+        if path.exists():
+            return True
+
+    return False
+
+
 def get_gpu_capability() -> GPUCapability:
-    """Assess GPU capabilities for video processing."""
+    """Assess GPU capabilities for video processing.
+
+    Detects NVIDIA, AMD, and Intel GPUs and determines available
+    acceleration options (CUDA, Vulkan, ncnn-vulkan).
+    """
     cap = GPUCapability()
 
-    if not is_nvidia_gpu_available():
-        # Check for Vulkan (needed for ncnn backends)
-        if shutil.which("vulkaninfo"):
-            try:
-                result = subprocess.run(
-                    ["vulkaninfo", "--summary"],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                )
-                if result.returncode == 0 and "GPU" in result.stdout:
-                    cap.vulkan_available = True
-                    # Try to extract GPU name
-                    for line in result.stdout.split("\n"):
-                        if "deviceName" in line:
-                            cap.gpu_name = line.split("=")[1].strip() if "=" in line else "Vulkan GPU"
-                            cap.has_gpu = True
-                            break
-            except Exception:
-                pass
-        return cap
+    # Check for ncnn-vulkan binary (works with AMD/Intel/NVIDIA via Vulkan)
+    cap.ncnn_vulkan_available = _check_ncnn_vulkan_available()
 
-    # NVIDIA GPU detected
-    cap.has_gpu = True
-    cap.cuda_available = True
-    cap.vulkan_available = True
+    # Get all GPUs using multi-vendor detection
+    all_gpus = get_all_gpus_multivendor()
 
-    gpu_info = get_all_gpu_info()
-    if gpu_info:
-        gpu = gpu_info[0]  # Use first GPU
-        cap.gpu_name = gpu.name
-        cap.vram_total_mb = gpu.total_memory_mb
-        cap.vram_free_mb = gpu.free_memory_mb
+    if all_gpus:
+        # Store info about all detected GPUs
+        cap.all_gpus = [
+            {
+                "name": g.name,
+                "vendor": g.vendor.value,
+                "vram_mb": g.total_memory_mb,
+                "cuda": g.cuda_supported,
+                "vulkan": g.vulkan_supported,
+                "dedicated": g.is_dedicated,
+            }
+            for g in all_gpus
+        ]
 
-        # Determine capabilities based on VRAM
-        if cap.vram_total_mb >= 8000:
-            cap.max_resolution = "4K (3840x2160)"
-            cap.can_process_4k = True
-            cap.recommended_tile_size = 0  # No tiling needed
-        elif cap.vram_total_mb >= 6000:
-            cap.max_resolution = "4K with tiling"
-            cap.can_process_4k = True
-            cap.recommended_tile_size = 512
-        elif cap.vram_total_mb >= 4000:
-            cap.max_resolution = "1440p (2560x1440)"
-            cap.can_process_4k = False
-            cap.recommended_tile_size = 384
-        elif cap.vram_total_mb >= 2000:
-            cap.max_resolution = "1080p (1920x1080)"
-            cap.can_process_4k = False
-            cap.recommended_tile_size = 256
-        else:
-            cap.max_resolution = "720p (1280x720)"
-            cap.can_process_4k = False
-            cap.recommended_tile_size = 128
+        # Use the best GPU (prioritizes dedicated, then NVIDIA > AMD > Intel)
+        best = get_best_gpu()
+        if best:
+            cap.has_gpu = True
+            cap.gpu_name = best.name
+            cap.gpu_vendor = best.vendor.value
+            cap.vram_total_mb = best.total_memory_mb
+            cap.vram_free_mb = best.free_memory_mb
+            cap.driver_version = best.driver_version
+            cap.cuda_available = best.cuda_supported
+            cap.vulkan_available = best.vulkan_supported
+
+            # Determine capabilities based on VRAM
+            if cap.vram_total_mb >= 8000:
+                cap.max_resolution = "4K (3840x2160)"
+                cap.can_process_4k = True
+                cap.recommended_tile_size = 0  # No tiling needed
+            elif cap.vram_total_mb >= 6000:
+                cap.max_resolution = "4K with tiling"
+                cap.can_process_4k = True
+                cap.recommended_tile_size = 512
+            elif cap.vram_total_mb >= 4000:
+                cap.max_resolution = "1440p (2560x1440)"
+                cap.can_process_4k = False
+                cap.recommended_tile_size = 384
+            elif cap.vram_total_mb >= 2000:
+                cap.max_resolution = "1080p (1920x1080)"
+                cap.can_process_4k = False
+                cap.recommended_tile_size = 256
+            else:
+                cap.max_resolution = "720p (1280x720)"
+                cap.can_process_4k = False
+                cap.recommended_tile_size = 128
+
+            return cap
+
+    # Fallback: No GPUs detected via WMI, try legacy nvidia-smi check
+    if is_nvidia_gpu_available():
+        cap.has_gpu = True
+        cap.cuda_available = True
+        cap.vulkan_available = True
+        cap.gpu_vendor = "nvidia"
+
+        gpu_info = get_all_gpu_info()
+        if gpu_info:
+            gpu = gpu_info[0]
+            cap.gpu_name = gpu.name
+            cap.vram_total_mb = gpu.total_memory_mb
+            cap.vram_free_mb = gpu.free_memory_mb
 
     return cap
 
@@ -285,7 +341,12 @@ def _analyze_compatibility(
     # GPU checks
     if not report.gpu.has_gpu:
         warnings.append("No GPU detected - processing will be CPU-only (very slow)")
-        recommendations.append("Install an NVIDIA GPU with 4GB+ VRAM for 10-50x faster processing")
+        recommendations.append("Install a GPU with 4GB+ VRAM for 10-50x faster processing")
+    elif report.gpu.gpu_vendor in ["amd", "intel"] and not report.gpu.ncnn_vulkan_available:
+        recommendations.append(
+            f"Install realesrgan-ncnn-vulkan for {report.gpu.gpu_vendor.upper()} GPU acceleration: "
+            "framewright install-ncnn-vulkan"
+        )
     elif report.gpu.vram_total_mb < 2000:
         warnings.append(f"Low VRAM ({report.gpu.vram_total_mb}MB) - may cause out-of-memory errors")
         recommendations.append("Use smaller tile sizes (--tile 128) or process at lower resolution")
@@ -326,7 +387,12 @@ def _analyze_compatibility(
     # Determine overall status
     if not report.dependencies_ok:
         report.overall_status = "incompatible"
-    elif not report.gpu.has_gpu or report.gpu.vram_total_mb < 2000:
+    elif not report.gpu.has_gpu:
+        report.overall_status = "limited"
+    elif report.gpu.vram_total_mb < 2000:
+        report.overall_status = "limited"
+    elif report.gpu.gpu_vendor in ["amd", "intel"] and not report.gpu.ncnn_vulkan_available:
+        # AMD/Intel GPUs need ncnn-vulkan for acceleration
         report.overall_status = "limited"
     elif len(warnings) > 2:
         report.overall_status = "limited"
@@ -372,15 +438,33 @@ def print_hardware_report(report: HardwareReport) -> str:
     ]
 
     if report.gpu.has_gpu:
+        vendor_icons = {
+            "nvidia": "NVIDIA",
+            "amd": "AMD",
+            "intel": "Intel",
+            "unknown": "Unknown",
+        }
+        vendor_display = vendor_icons.get(report.gpu.gpu_vendor, report.gpu.gpu_vendor)
+
         lines.extend([
             f"  GPU:       {report.gpu.gpu_name}",
+            f"  Vendor:    {vendor_display}",
             f"  VRAM:      {report.gpu.vram_total_mb} MB total, {report.gpu.vram_free_mb} MB free",
             f"  CUDA:      {'Yes' if report.gpu.cuda_available else 'No'}",
             f"  Vulkan:    {'Yes' if report.gpu.vulkan_available else 'No'}",
+            f"  ncnn-vulkan: {'Yes' if report.gpu.ncnn_vulkan_available else 'No (install for AMD/Intel acceleration)'}",
             f"  Max Res:   {report.gpu.max_resolution}",
         ])
+
+        # Show all detected GPUs if more than one
+        if len(report.gpu.all_gpus) > 1:
+            lines.append("")
+            lines.append("  All GPUs detected:")
+            for i, g in enumerate(report.gpu.all_gpus):
+                gpu_type = "dedicated" if g.get("dedicated") else "integrated"
+                lines.append(f"    [{i}] {g['name']} ({g['vendor']}, {g['vram_mb']}MB, {gpu_type})")
     else:
-        lines.append("  ❌ No compatible GPU detected")
+        lines.append("  No compatible GPU detected")
 
     lines.extend([
         "",
