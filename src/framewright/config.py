@@ -147,6 +147,7 @@ class Config:
     continue_on_error: bool = True  # Continue processing even if some frames fail
 
     # GPU selection and multi-GPU distribution options
+    require_gpu: bool = True  # Require GPU for processing - blocks CPU fallback to prevent runaway CPU usage
     gpu_id: Optional[int] = None  # Select specific GPU by index (--gpu N), None = auto-select
     enable_multi_gpu: bool = False  # Enable multi-GPU frame distribution (--multi-gpu)
     gpu_ids: Optional[List[int]] = None  # Specific GPU IDs to use (None = auto-detect all)
@@ -159,6 +160,11 @@ class Config:
     target_fps: Optional[float] = None  # Target frame rate (None = auto from source)
     rife_model: str = "rife-v4.6"  # RIFE model version
     rife_gpu_id: int = 0  # GPU for RIFE processing
+
+    # Frame deduplication options (for old films with artificial FPS padding)
+    enable_deduplication: bool = False  # Detect and remove duplicate frames
+    deduplication_threshold: float = 0.98  # Similarity threshold (0.98 = very similar)
+    expected_source_fps: Optional[float] = None  # Hint for original FPS (e.g., 18 for 1909 film)
 
     # Auto-enhancement options (fully automated processing)
     enable_auto_enhance: bool = False  # Enable automatic enhancement pipeline
@@ -197,6 +203,7 @@ class Config:
     # Auto-generated paths
     temp_dir: Path = field(init=False)
     frames_dir: Path = field(init=False)
+    unique_frames_dir: Path = field(init=False)  # For deduplicated frames
     enhanced_dir: Path = field(init=False)
     interpolated_dir: Path = field(init=False)  # For RIFE output
     checkpoint_dir: Path = field(init=False)
@@ -226,6 +233,7 @@ class Config:
         # Create derived directories (using overrides if provided)
         self.temp_dir = self.project_dir / "temp"
         self.frames_dir = self._frames_dir_override if self._frames_dir_override is not None else self.temp_dir / "frames"
+        self.unique_frames_dir = self.temp_dir / "unique_frames"  # Deduplicated frames
         self.enhanced_dir = self._enhanced_dir_override if self._enhanced_dir_override is not None else self.temp_dir / "enhanced"
         self.interpolated_dir = self.temp_dir / "interpolated"
         self.checkpoint_dir = self.project_dir / ".framewright"
@@ -282,6 +290,12 @@ class Config:
                 f"Invalid RIFE model '{self.rife_model}'. "
                 f"Valid models: {valid_rife_models}"
             )
+
+        # Validate deduplication options
+        if not 0.0 <= self.deduplication_threshold <= 1.0:
+            raise ValueError("deduplication_threshold must be between 0.0 and 1.0")
+        if self.expected_source_fps is not None and self.expected_source_fps <= 0:
+            raise ValueError("expected_source_fps must be positive")
 
         # Validate GPU options
         if self.gpu_id is not None:
@@ -492,6 +506,8 @@ class Config:
         self.enhanced_dir.mkdir(parents=True, exist_ok=True)
         if self.output_dir is not None:
             self.output_dir.mkdir(parents=True, exist_ok=True)
+        if self.enable_deduplication:
+            self.unique_frames_dir.mkdir(parents=True, exist_ok=True)
         if self.enable_interpolation:
             self.interpolated_dir.mkdir(parents=True, exist_ok=True)
         if self.enable_checkpointing:
@@ -515,9 +531,10 @@ class Config:
             'enable_validation', 'min_ssim_threshold', 'min_psnr_threshold',
             'enable_disk_validation', 'disk_safety_margin', 'enable_vram_monitoring',
             'tile_size', 'max_retries', 'retry_delay', 'parallel_frames',
-            'continue_on_error', 'gpu_id', 'enable_multi_gpu', 'gpu_ids', 'gpu_load_balance_strategy',
+            'continue_on_error', 'require_gpu', 'gpu_id', 'enable_multi_gpu', 'gpu_ids', 'gpu_load_balance_strategy',
             'workers_per_gpu', 'enable_work_stealing', 'enable_interpolation', 'target_fps',
-            'rife_model', 'rife_gpu_id', 'enable_auto_enhance', 'auto_detect_content',
+            'rife_model', 'rife_gpu_id', 'enable_deduplication', 'deduplication_threshold',
+            'expected_source_fps', 'enable_auto_enhance', 'auto_detect_content',
             'auto_defect_repair', 'auto_face_restore', 'scratch_sensitivity',
             'dust_sensitivity', 'grain_reduction', 'model_download_dir', 'model_dir',
             'enable_colorization', 'colorization_model', 'colorization_strength',
@@ -570,9 +587,10 @@ class Config:
             'enable_validation', 'min_ssim_threshold', 'min_psnr_threshold',
             'enable_disk_validation', 'disk_safety_margin', 'enable_vram_monitoring',
             'tile_size', 'max_retries', 'retry_delay', 'parallel_frames',
-            'continue_on_error', 'gpu_id', 'enable_multi_gpu', 'gpu_ids', 'gpu_load_balance_strategy',
+            'continue_on_error', 'require_gpu', 'gpu_id', 'enable_multi_gpu', 'gpu_ids', 'gpu_load_balance_strategy',
             'workers_per_gpu', 'enable_work_stealing', 'enable_interpolation', 'target_fps',
-            'rife_model', 'rife_gpu_id', 'enable_auto_enhance', 'auto_detect_content',
+            'rife_model', 'rife_gpu_id', 'enable_deduplication', 'deduplication_threshold',
+            'expected_source_fps', 'enable_auto_enhance', 'auto_detect_content',
             'auto_defect_repair', 'auto_face_restore', 'scratch_sensitivity',
             'dust_sensitivity', 'grain_reduction', 'model_download_dir', 'model_dir',
             'enable_colorization', 'colorization_model', 'colorization_strength',

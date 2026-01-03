@@ -15,6 +15,7 @@ A modular, frame-accurate video restoration pipeline for recovering vintage and 
 | Feature | Status | Description |
 |---------|--------|-------------|
 | AI Upscaling | ✅ Ready | Real-ESRGAN 2x/4x enhancement |
+| Frame Deduplication | ✅ Ready | Remove duplicate frames from old films (18fps→25fps) |
 | Frame Interpolation | ✅ Ready | RIFE smooth motion interpolation |
 | Face Restoration | ✅ Ready | GFPGAN/CodeFormer integration |
 | Defect Repair | ✅ Ready | Scratch, dust, grain removal |
@@ -33,6 +34,7 @@ A modular, frame-accurate video restoration pipeline for recovering vintage and 
 | YouTube Download | ✅ Ready | yt-dlp integration |
 | Batch Processing | ✅ Ready | Process multiple videos with queue |
 | Streaming Mode | ✅ Ready | Real-time progressive processing |
+| GPU Requirement | ✅ Ready | Prevents CPU fallback to avoid system freeze |
 
 ---
 
@@ -51,6 +53,34 @@ framewright-ui
 
 # Opens in your browser at http://localhost:7860
 ```
+
+#### Web UI Features
+
+| Feature | Description |
+|---------|-------------|
+| **Video Analysis** | Auto-detects resolution, FPS, duration, codec, and audio |
+| **Time Estimation** | Shows estimated processing time based on hardware and settings |
+| **Hardware Detection** | Displays GPU/CPU mode, VRAM, and backend (CUDA/Vulkan) |
+| **Checkpoint Resume** | Auto-detects and resumes interrupted restorations |
+| **Live Progress Log** | Real-time processing log with detailed status |
+| **Stop Button** | Cancel processing while preserving progress log |
+
+#### GPU Support
+
+| GPU Vendor | Backend | Status |
+|------------|---------|--------|
+| NVIDIA | CUDA / Vulkan (NCNN) | ✅ Full support |
+| AMD | Vulkan (NCNN) | ✅ Full support |
+| Intel | Vulkan (NCNN) | ✅ Full support |
+| CPU | Fallback | ⚠️ Very slow (blocked by default) |
+
+### Google Colab (Free GPU)
+
+No GPU? Use Google Colab for free GPU-accelerated restoration:
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/YOUR_USERNAME/video-restoration-pipeline-framewright/blob/main/notebooks/FrameWright_Colab.ipynb)
+
+Or open `notebooks/FrameWright_Colab.ipynb` directly in Colab.
 
 ### Check Your Hardware First
 
@@ -251,9 +281,11 @@ framewright restore --input video.mp4 --model-dir /path/to/models/
 ```
 ./project_name/
 ├── source/              # Downloaded/copied source video
-├── frames/              # Extracted frames (PNG)
-├── enhanced/            # AI-enhanced frames
-├── interpolated/        # RIFE interpolated frames (if enabled)
+├── temp/
+│   ├── frames/          # Extracted frames (PNG)
+│   ├── unique_frames/   # Deduplicated frames (if deduplication enabled)
+│   ├── enhanced/        # AI-enhanced frames
+│   └── interpolated/    # RIFE interpolated frames (if enabled)
 ├── output/              # Final restored video
 │   └── restored.mkv
 └── logs/                # Processing logs
@@ -302,6 +334,127 @@ framewright restore --input old_film.mp4 \
     --rife-model rife-v4.6 \
     --output smooth_film.mp4
 ```
+
+---
+
+## Frame Deduplication (Historical Films)
+
+Many historical films were shot at lower frame rates (16-18fps) but have been digitized or uploaded to YouTube at 25fps by duplicating frames. This causes:
+
+- **Wasted GPU time** enhancing duplicate frames
+- **Jerky motion** from artificial frame padding
+- **Inaccurate frame rate** metadata
+
+FrameWright can detect and remove these duplicate frames, enhance only unique frames, then use RIFE to create smooth motion.
+
+### How It Works
+
+```
+Original: 18fps film → Uploaded as 25fps (frames duplicated)
+
+Without Deduplication:
+  Extract 25fps → Enhance all 25 frames/sec → Jerky 25fps output
+
+With Deduplication + RIFE:
+  Extract 25fps → Detect ~18fps unique → Enhance 18 frames/sec → RIFE interpolate → Smooth 25fps+ output
+```
+
+### Benefits
+
+| Benefit | Description |
+|---------|-------------|
+| **28-40% faster** | Enhance only unique frames (18fps vs 25fps) |
+| **Smoother motion** | RIFE generates intermediate frames vs duplicating |
+| **True frame rate** | Detects actual source FPS (16-18fps for 1900s film) |
+| **Better quality** | No enhancement artifacts from processing duplicates |
+
+### Workflow for 1909 Film Example
+
+```python
+from framewright import Config, VideoRestorer
+from pathlib import Path
+
+config = Config(
+    project_dir=Path("F:/Video/Moscow Clad in Snow 1909"),
+
+    # Enable deduplication for historical film
+    enable_deduplication=True,
+    deduplication_threshold=0.98,  # Similarity threshold
+    expected_source_fps=18,        # Hint: 1909 film was ~16-18fps
+
+    # Enable RIFE for smooth motion (instead of duplicating frames back)
+    enable_interpolation=True,
+    target_fps=25,  # Or 48 for ultra-smooth
+
+    # Standard enhancement
+    scale_factor=4,
+    model_name="realesrgan-x4plus",
+)
+
+restorer = VideoRestorer(config)
+output = restorer.restore_video("moscow_1909.mp4")
+```
+
+### CLI Usage
+
+```bash
+# Deduplicate + enhance + RIFE interpolation
+framewright restore --input moscow_1909.mp4 \
+    --deduplicate \
+    --dedup-threshold 0.98 \
+    --expected-fps 18 \
+    --enable-rife \
+    --target-fps 25 \
+    --output restored.mp4
+
+# Analyze frame duplication without processing
+framewright analyze --input old_film.mp4 --detect-duplicates
+```
+
+### Pipeline Flow
+
+1. **Extract frames** → `temp/frames/` (all 25fps frames)
+2. **Deduplicate** → `temp/unique_frames/` (only ~18fps unique frames)
+3. **Enhance** → `temp/enhanced/` (GPU processes fewer frames)
+4. **RIFE interpolate** → `temp/interpolated/` (smooth 25fps+ from 18fps)
+5. **Reassemble** → final video with smooth motion
+
+### Settings Reference
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `enable_deduplication` | `False` | Enable duplicate frame detection |
+| `deduplication_threshold` | `0.98` | Similarity threshold (0.95-0.99) |
+| `expected_source_fps` | `None` | Hint for original FPS (e.g., 18 for 1909 film) |
+
+### Threshold Selection Guide
+
+| Threshold | Use Case | Expected Result |
+|-----------|----------|-----------------|
+| **0.98-0.99** | Clean sources, minimal compression | Strict: only near-exact duplicates |
+| **0.96-0.97** | YouTube videos (recommended) | Balanced: handles compression artifacts |
+| **0.94-0.95** | Heavily compressed sources | Lenient: may catch similar (non-duplicate) frames |
+| **0.90-0.93** | Very noisy/degraded sources | Very lenient: use with caution |
+
+**Expected duplicate ratios for old films:**
+- 16fps original → 25fps upload: ~36% duplicates (64% unique)
+- 18fps original → 25fps upload: ~28% duplicates (72% unique)
+- 18fps original → 30fps upload: ~40% duplicates (60% unique)
+
+**If you see too few duplicates:** The video may be native frame rate (not padded) or threshold is too strict.
+
+**If you see too many duplicates:** Threshold is too aggressive—try 0.96-0.97 instead.
+
+> **Note:** Requires `imagehash` package for perceptual hashing. Install with: `pip install imagehash`
+
+### Historical Film FPS Reference
+
+| Era | Typical FPS | Notes |
+|-----|-------------|-------|
+| 1890s-1900s | 14-16 fps | Hand-cranked cameras |
+| 1900s-1910s | 16-18 fps | Early motorized cameras |
+| 1920s | 18-22 fps | Transition period |
+| 1930s+ | 24 fps | Sound film standard |
 
 ---
 
@@ -372,6 +525,9 @@ sudo apt install ffmpeg
 # macOS:
 brew install ffmpeg
 # Windows: download from https://ffmpeg.org/download.html
+
+# For frame deduplication (recommended for historical films)
+pip install imagehash
 
 # Models are downloaded automatically on first use
 ```
@@ -521,9 +677,11 @@ src/framewright/
 ├── processors/
 │   ├── analyzer.py         # Content analysis & detection
 │   ├── adaptive_enhance.py # Adaptive enhancement
+│   ├── deduplication.py    # Frame deduplication for historical films
 │   ├── defect_repair.py    # Scratch/dust/grain removal
 │   ├── face_restore.py     # GFPGAN/CodeFormer
 │   ├── interpolation.py    # RIFE frame interpolation
+│   ├── ncnn_vulkan.py      # NCNN-Vulkan GPU backend
 │   ├── colorization.py     # DeOldify/DDColor
 │   ├── watermark_removal.py # LaMA inpainting
 │   ├── subtitle_removal.py # OCR + inpainting

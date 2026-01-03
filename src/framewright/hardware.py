@@ -388,12 +388,20 @@ def _analyze_compatibility(
     if not report.dependencies_ok:
         report.overall_status = "incompatible"
     elif not report.gpu.has_gpu:
-        report.overall_status = "limited"
+        report.overall_status = "incompatible"  # Changed: no GPU = incompatible (require_gpu=True by default)
+        warnings.append(
+            "CRITICAL: No GPU detected. Processing would use CPU only, "
+            "which can freeze your system. GPU is required by default."
+        )
+    elif report.gpu.vram_total_mb < 1024:
+        report.overall_status = "incompatible"  # Less than 1GB VRAM is not viable
+        warnings.append(f"GPU VRAM ({report.gpu.vram_total_mb}MB) below minimum (1024MB)")
     elif report.gpu.vram_total_mb < 2000:
         report.overall_status = "limited"
     elif report.gpu.gpu_vendor in ["amd", "intel"] and not report.gpu.ncnn_vulkan_available:
         # AMD/Intel GPUs need ncnn-vulkan for acceleration
         report.overall_status = "limited"
+        warnings.append("ncnn-vulkan required for GPU acceleration but not installed")
     elif len(warnings) > 2:
         report.overall_status = "limited"
     else:

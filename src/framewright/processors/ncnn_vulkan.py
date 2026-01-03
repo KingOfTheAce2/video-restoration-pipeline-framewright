@@ -4,10 +4,14 @@ Provides GPU-accelerated frame enhancement using the ncnn-vulkan backend,
 which supports AMD, Intel, and NVIDIA GPUs via the Vulkan API.
 
 This is the recommended backend for non-NVIDIA GPUs.
+
+IMPORTANT: This module includes CPU fallback detection to prevent
+runaway CPU usage when GPU processing fails silently.
 """
 import logging
 import os
 import platform
+import re
 import shutil
 import subprocess
 import tempfile
@@ -18,6 +22,16 @@ from typing import List, Optional, Tuple
 from urllib.request import urlretrieve
 
 logger = logging.getLogger(__name__)
+
+# CPU fallback indicators in ncnn-vulkan output
+CPU_FALLBACK_INDICATORS = [
+    "using cpu",
+    "no vulkan device",
+    "vulkan not found",
+    "failed to create gpu instance",
+    "cpu mode",
+    "fallback to cpu",
+]
 
 # Download URLs for realesrgan-ncnn-vulkan
 NCNN_VULKAN_RELEASES = {
@@ -53,6 +67,7 @@ class NcnnVulkanConfig:
     gpu_id: int = -1  # -1 = auto
     tta_mode: bool = False  # Test-time augmentation
     output_format: str = "png"
+    require_gpu: bool = True  # Fail if GPU not available (prevents CPU fallback)
 
     def validate(self) -> None:
         """Validate configuration."""
@@ -166,18 +181,116 @@ class NcnnVulkanBackend:
         if not self.is_available():
             return []
 
-        # ncnn-vulkan doesn't have a direct GPU list command,
-        # but we can use vulkaninfo if available
+        # Try to get GPU list from vulkaninfo
+        gpus = self._detect_vulkan_gpus()
+        self._available_gpus = gpus
+        return gpus
+
+    def _detect_vulkan_gpus(self) -> List[dict]:
+        """Detect Vulkan-capable GPUs using vulkaninfo.
+
+        Returns:
+            List of GPU dictionaries with 'id', 'name', and 'type' keys.
+        """
         gpus = []
 
-        try:
-            # Try to detect GPUs via processing a tiny test
-            # For now, return empty - GPUs are auto-detected
-            self._available_gpus = gpus
-            return gpus
-        except Exception as e:
-            logger.debug(f"Could not enumerate Vulkan GPUs: {e}")
-            return []
+        # Try vulkaninfo first
+        vulkaninfo = shutil.which("vulkaninfo")
+        if vulkaninfo:
+            try:
+                result = subprocess.run(
+                    [vulkaninfo, "--summary"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    creationflags=subprocess.CREATE_NO_WINDOW if platform.system() == "Windows" else 0,
+                )
+
+                if result.returncode == 0:
+                    # Parse GPU info from vulkaninfo output
+                    lines = result.stdout.split('\n')
+                    gpu_id = 0
+                    for line in lines:
+                        # Look for device name lines
+                        if 'deviceName' in line or 'GPU' in line.upper():
+                            # Extract GPU name
+                            match = re.search(r'=\s*(.+)$', line)
+                            if match:
+                                gpu_name = match.group(1).strip()
+                                gpus.append({
+                                    'id': gpu_id,
+                                    'name': gpu_name,
+                                    'type': 'discrete' if any(x in gpu_name.lower() for x in ['nvidia', 'amd', 'radeon', 'geforce', 'rtx', 'rx']) else 'integrated',
+                                })
+                                gpu_id += 1
+
+                    if gpus:
+                        logger.info(f"Detected {len(gpus)} Vulkan GPU(s): {[g['name'] for g in gpus]}")
+                        return gpus
+
+            except Exception as e:
+                logger.debug(f"vulkaninfo failed: {e}")
+
+        # Fallback: Try to detect via WMI on Windows
+        if platform.system() == "Windows":
+            try:
+                from ..utils.gpu import get_all_gpus_multivendor
+                all_gpus = get_all_gpus_multivendor()
+                for i, gpu in enumerate(all_gpus):
+                    if gpu.vulkan_supported:
+                        gpus.append({
+                            'id': i,
+                            'name': gpu.name,
+                            'type': 'discrete' if gpu.is_dedicated else 'integrated',
+                        })
+            except Exception as e:
+                logger.debug(f"WMI GPU detection failed: {e}")
+
+        return gpus
+
+    def verify_gpu_available(self) -> Tuple[bool, str]:
+        """Verify that GPU processing is actually available.
+
+        Performs a quick test to ensure ncnn-vulkan can use the GPU
+        and won't fall back to CPU.
+
+        Returns:
+            Tuple of (is_available, message)
+        """
+        gpus = self.list_gpus()
+
+        if not gpus:
+            return False, "No Vulkan-capable GPUs detected"
+
+        # Check for discrete GPU (preferred)
+        discrete_gpus = [g for g in gpus if g.get('type') == 'discrete']
+
+        if discrete_gpus:
+            return True, f"Discrete GPU available: {discrete_gpus[0]['name']}"
+        elif gpus:
+            return True, f"Integrated GPU available: {gpus[0]['name']}"
+
+        return False, "No GPUs detected"
+
+    def _check_cpu_fallback(self, stderr: str) -> bool:
+        """Check if ncnn-vulkan output indicates CPU fallback.
+
+        Args:
+            stderr: The stderr output from ncnn-vulkan
+
+        Returns:
+            True if CPU fallback detected
+        """
+        if not stderr:
+            return False
+
+        stderr_lower = stderr.lower()
+        for indicator in CPU_FALLBACK_INDICATORS:
+            if indicator in stderr_lower:
+                logger.warning(f"CPU fallback detected: '{indicator}' in output")
+                return True
+
+        return False
 
     def enhance_frame(
         self,
@@ -194,12 +307,23 @@ class NcnnVulkanBackend:
 
         Returns:
             Tuple of (success, error_message)
+
+        Note:
+            If config.require_gpu=True, this will fail if CPU fallback is detected.
+            This prevents runaway CPU usage that can freeze the system.
         """
         if not self.is_available():
             return False, "ncnn-vulkan binary not found"
 
         config.validate()
 
+        # Pre-check GPU availability if required
+        if config.require_gpu:
+            gpu_ok, gpu_msg = self.verify_gpu_available()
+            if not gpu_ok:
+                return False, f"GPU required but not available: {gpu_msg}"
+
+        # Build command
         cmd = [
             str(self.binary_path),
             "-i", str(input_path),
@@ -212,8 +336,15 @@ class NcnnVulkanBackend:
         if config.tile_size > 0:
             cmd.extend(["-t", str(config.tile_size)])
 
+        # GPU selection: use explicit GPU ID if set, otherwise use first detected GPU
         if config.gpu_id >= 0:
             cmd.extend(["-g", str(config.gpu_id)])
+        elif config.require_gpu:
+            # When GPU is required, explicitly select GPU 0 to prevent CPU fallback
+            gpus = self.list_gpus()
+            if gpus:
+                cmd.extend(["-g", str(gpus[0]['id'])])
+                logger.debug(f"Explicitly selecting GPU {gpus[0]['id']}: {gpus[0]['name']}")
 
         if config.tta_mode:
             cmd.append("-x")
@@ -232,6 +363,18 @@ class NcnnVulkanBackend:
                 creationflags=subprocess.CREATE_NO_WINDOW if platform.system() == "Windows" else 0,
             )
 
+            # Check for CPU fallback in output
+            combined_output = f"{result.stdout or ''} {result.stderr or ''}"
+            if config.require_gpu and self._check_cpu_fallback(combined_output):
+                # Delete output file if created (we don't trust CPU-processed results)
+                if output_path.exists():
+                    output_path.unlink()
+                return False, (
+                    "CPU fallback detected! Processing used CPU instead of GPU. "
+                    "This would consume excessive CPU resources. "
+                    "Check GPU drivers, Vulkan installation, or set require_gpu=False."
+                )
+
             if not output_path.exists():
                 return False, "Output file was not created"
 
@@ -239,10 +382,19 @@ class NcnnVulkanBackend:
 
         except subprocess.CalledProcessError as e:
             error_msg = e.stderr or str(e)
+
+            # Check for CPU fallback in error output
+            if config.require_gpu and self._check_cpu_fallback(error_msg):
+                return False, (
+                    "CPU fallback detected in error output! "
+                    "GPU processing failed and would fall back to CPU. "
+                    "Check GPU drivers or Vulkan installation."
+                )
+
             logger.error(f"ncnn-vulkan failed: {error_msg}")
             return False, error_msg
         except subprocess.TimeoutExpired:
-            return False, "Processing timed out (>5 minutes)"
+            return False, "Processing timed out (>5 minutes) - possible CPU fallback causing slow processing"
         except Exception as e:
             return False, str(e)
 

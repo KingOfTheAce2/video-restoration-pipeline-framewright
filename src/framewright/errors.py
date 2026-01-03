@@ -80,6 +80,25 @@ class DependencyError(FatalError):
     pass
 
 
+class GPURequiredError(FatalError):
+    """GPU required but not available or not working.
+
+    Raised when require_gpu=True but no GPU is detected or GPU
+    processing fails and would fall back to CPU. This prevents
+    runaway CPU usage that can freeze the system.
+    """
+    pass
+
+
+class CPUFallbackError(FatalError):
+    """CPU fallback detected when GPU required.
+
+    Raised when processing starts using CPU instead of GPU
+    and require_gpu=True in config.
+    """
+    pass
+
+
 class ConfigurationError(FatalError):
     """Invalid configuration."""
     pass

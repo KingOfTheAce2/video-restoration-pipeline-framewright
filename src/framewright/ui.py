@@ -482,9 +482,12 @@ if HAS_GRADIO:
             model: str,
             crf: int,
             enhance_audio: bool,
+            force_cpu: bool,
             model_download_dir: str,
             interpolate: bool,
             target_fps: int,
+            enable_deduplication: bool,
+            deduplication_threshold: float,
             enable_colorization: bool,
             colorization_model: str,
             enable_watermark_removal: bool,
@@ -519,21 +522,216 @@ if HAS_GRADIO:
                     source = youtube_url.strip()
                     log(f"Source: YouTube URL")
                     log(f"  URL: {source}")
+                    video_duration = None
+                    video_frames = None
+                    video_resolution = None
+                    video_fps = None
                 elif input_video:
                     source = input_video
                     log(f"Source: Local file")
                     log(f"  Path: {source}")
+
+                    # Analyze video file
+                    try:
+                        from .utils.ffmpeg import get_video_info
+                        video_info = get_video_info(Path(input_video))
+
+                        # Extract video stream info
+                        video_stream = None
+                        audio_stream = None
+                        for stream in video_info.get('streams', []):
+                            if stream.get('codec_type') == 'video' and not video_stream:
+                                video_stream = stream
+                            elif stream.get('codec_type') == 'audio' and not audio_stream:
+                                audio_stream = stream
+
+                        if video_stream:
+                            # Resolution
+                            width = video_stream.get('width', 0)
+                            height = video_stream.get('height', 0)
+                            video_resolution = (width, height)
+
+                            # FPS
+                            fps_str = video_stream.get('r_frame_rate', '0/1')
+                            num, den = map(int, fps_str.split('/'))
+                            video_fps = num / den if den != 0 else 0.0
+
+                            # Duration and frame count
+                            if 'duration' in video_stream:
+                                video_duration = float(video_stream['duration'])
+                            elif 'duration' in video_info.get('format', {}):
+                                video_duration = float(video_info['format']['duration'])
+                            else:
+                                video_duration = None
+
+                            if 'nb_frames' in video_stream:
+                                video_frames = int(video_stream['nb_frames'])
+                            elif video_duration and video_fps:
+                                video_frames = int(video_duration * video_fps)
+                            else:
+                                video_frames = None
+
+                            # File size
+                            file_size_bytes = int(video_info.get('format', {}).get('size', 0))
+                            file_size_mb = file_size_bytes / (1024 * 1024)
+
+                            log_section("VIDEO ANALYSIS")
+                            log(f"Resolution: {width}x{height}")
+                            log(f"Frame rate: {video_fps:.2f} fps")
+                            if video_duration:
+                                mins, secs = divmod(int(video_duration), 60)
+                                hrs, mins = divmod(mins, 60)
+                                if hrs > 0:
+                                    log(f"Duration: {hrs}h {mins}m {secs}s")
+                                else:
+                                    log(f"Duration: {mins}m {secs}s")
+                            if video_frames:
+                                log(f"Total frames: {video_frames:,}")
+                            log(f"File size: {file_size_mb:.1f} MB")
+                            log(f"Codec: {video_stream.get('codec_name', 'unknown')}")
+                            if audio_stream:
+                                log(f"Audio: {audio_stream.get('codec_name', 'unknown')} ({audio_stream.get('channels', '?')}ch)")
+                            else:
+                                log(f"Audio: None detected")
+                        else:
+                            video_duration = None
+                            video_frames = None
+                            video_resolution = None
+                            video_fps = None
+                    except Exception as e:
+                        log(f"Note: Could not analyze video ({e})")
+                        video_duration = None
+                        video_frames = None
+                        video_resolution = None
+                        video_fps = None
                 else:
                     return None, "Please provide a video file or YouTube URL"
 
                 # Determine output directory
+                checkpoint_found = False
+                resumed_from_checkpoint = False
+
                 if output_folder and output_folder.strip():
                     output_dir = Path(output_folder.strip())
                     output_dir.mkdir(parents=True, exist_ok=True)
                     log(f"Output: {output_dir}")
                 else:
-                    output_dir = Path(tempfile.mkdtemp(prefix="framewright_"))
-                    log(f"Working directory: {output_dir}")
+                    # Check for existing checkpoint in video's parent directory
+                    if input_video:
+                        video_parent = Path(input_video).parent
+                        checkpoint_path = video_parent / ".framewright" / "checkpoint.json"
+                        if checkpoint_path.exists():
+                            try:
+                                import json
+                                with open(checkpoint_path, 'r') as f:
+                                    checkpoint_data = json.load(f)
+                                # Verify this checkpoint is for our video
+                                checkpoint_source = Path(checkpoint_data.get('source_path', ''))
+                                if checkpoint_source.name == Path(input_video).name:
+                                    output_dir = video_parent
+                                    checkpoint_found = True
+                                    stage = checkpoint_data.get('stage', 'unknown')
+                                    completed = checkpoint_data.get('last_completed_frame', 0)
+                                    total = checkpoint_data.get('total_frames', 0)
+                                    log_section("RESUME DETECTED")
+                                    log(f"Found checkpoint in: {video_parent}")
+                                    log(f"Stage: {stage}")
+                                    log(f"Progress: {completed}/{total} frames ({100*completed/total:.1f}%)" if total > 0 else f"Progress: {completed} frames")
+                                    resumed_from_checkpoint = True
+                            except Exception as e:
+                                logger.debug(f"Could not read checkpoint: {e}")
+
+                    if not checkpoint_found:
+                        output_dir = Path(tempfile.mkdtemp(prefix="framewright_"))
+                        log(f"Working directory: {output_dir}")
+
+                # Log hardware status
+                log_section("HARDWARE")
+                try:
+                    hw_report = check_hardware()
+                    if hw_report.gpu.has_gpu:
+                        gpu_mode = "GPU"
+                        gpu_info = hw_report.gpu.gpu_name
+                        vram_info = f"{hw_report.gpu.vram_free_mb}MB free / {hw_report.gpu.vram_total_mb}MB total"
+                        log(f"Mode: {gpu_mode} (accelerated)")
+                        log(f"GPU: {gpu_info}")
+                        log(f"VRAM: {vram_info}")
+                        if hw_report.gpu.cuda_available:
+                            log(f"Backend: CUDA")
+                        elif hw_report.gpu.vulkan_available:
+                            log(f"Backend: Vulkan (NCNN)")
+                    else:
+                        log(f"Mode: CPU (no GPU detected)")
+                        log(f"CPU: {hw_report.system.cpu_name}")
+                        log(f"Note: Processing will be slower without GPU")
+                    log(f"RAM: {hw_report.system.ram_available_gb:.1f}GB available")
+                    has_gpu = hw_report.gpu.has_gpu
+                except Exception as e:
+                    log(f"Mode: Unknown (hardware check failed: {e})")
+                    has_gpu = False
+
+                # Time estimation
+                if video_frames:
+                    log_section("TIME ESTIMATE")
+
+                    # Base processing speed estimates (frames per second)
+                    # These are rough estimates based on typical hardware
+                    if has_gpu:
+                        # GPU processing speeds vary by card
+                        # Mid-range GPU (RTX 3060-level): ~2-5 fps for 4x upscale
+                        # High-end GPU (RTX 3080+): ~5-10 fps for 4x upscale
+                        if scale_factor == 4:
+                            base_fps = 3.0  # Conservative estimate
+                        else:
+                            base_fps = 6.0  # 2x is faster
+                    else:
+                        # CPU is much slower
+                        if scale_factor == 4:
+                            base_fps = 0.1  # Very slow on CPU
+                        else:
+                            base_fps = 0.2
+
+                    # Adjust for additional processing steps
+                    multiplier = 1.0
+                    if enable_deduplication:
+                        multiplier *= 0.95  # Slight overhead for analysis, but saves frames
+                    if interpolate:
+                        multiplier *= 0.7  # RIFE adds significant time
+                    if enable_colorization:
+                        multiplier *= 0.5  # Colorization is expensive
+                    if enable_watermark_removal:
+                        multiplier *= 0.9  # Inpainting adds some time
+
+                    effective_fps = base_fps * multiplier
+                    estimated_seconds = video_frames / effective_fps
+
+                    # Add overhead for extraction and encoding
+                    estimated_seconds *= 1.2  # 20% overhead
+
+                    # Format time estimate
+                    est_mins, est_secs = divmod(int(estimated_seconds), 60)
+                    est_hrs, est_mins = divmod(est_mins, 60)
+
+                    if est_hrs > 0:
+                        time_str = f"{est_hrs}h {est_mins}m"
+                    elif est_mins > 0:
+                        time_str = f"{est_mins}m {est_secs}s"
+                    else:
+                        time_str = f"{est_secs}s"
+
+                    log(f"Estimated time: ~{time_str}")
+                    log(f"Processing rate: ~{effective_fps:.1f} frames/sec")
+
+                    # Show speed comparison
+                    if video_duration:
+                        speed_ratio = video_duration / estimated_seconds
+                        if speed_ratio >= 1:
+                            log(f"Speed: {speed_ratio:.1f}x realtime")
+                        else:
+                            log(f"Speed: {1/speed_ratio:.1f}x slower than realtime")
+
+                    if not has_gpu:
+                        log(f"Tip: GPU acceleration would be ~20-30x faster")
 
                 # Log settings summary
                 log_section("SETTINGS")
@@ -542,6 +740,8 @@ if HAS_GRADIO:
                 log(f"AI Model: {model}")
                 log(f"Quality (CRF): {crf}")
                 log(f"Output format: {fmt.upper()}")
+                if force_cpu:
+                    log(f"⚠️ Processing: CPU MODE (slow - GPU disabled by user)")
 
                 # Configure
                 model_dir = None
@@ -553,6 +753,8 @@ if HAS_GRADIO:
                 features = []
                 if enhance_audio:
                     features.append("Audio enhancement")
+                if enable_deduplication:
+                    features.append(f"Frame deduplication (threshold: {deduplication_threshold})")
                 if interpolate:
                     features.append(f"Frame interpolation ({target_fps} fps)")
                 if enable_colorization:
@@ -576,17 +778,27 @@ if HAS_GRADIO:
                     model_download_dir=model_dir,
                     enable_checkpointing=True,
                     enable_validation=True,
+                    # GPU/CPU mode
+                    require_gpu=not force_cpu,
+                    # Frame deduplication
+                    enable_deduplication=enable_deduplication,
+                    deduplication_threshold=deduplication_threshold,
+                    # Frame interpolation (RIFE)
+                    enable_interpolation=interpolate,
+                    target_fps=float(target_fps) if interpolate else None,
+                    # Colorization
                     enable_colorization=enable_colorization,
                     colorization_model=colorization_model,
+                    # Watermark removal
                     enable_watermark_removal=enable_watermark_removal,
                     watermark_auto_detect=watermark_auto_detect,
                 )
 
-                # Progress callback with detailed logging
+                # Progress callback with detailed logging (no desc to avoid overlay)
                 last_stage = [None]
                 def on_progress(current: int, total: int, stage: str):
                     pct = (current / total * 100) if total > 0 else 0
-                    progress((current / total) if total > 0 else 0, desc=stage)
+                    progress((current / total) if total > 0 else 0)  # No desc - avoids overlay
                     if stage != last_stage[0]:
                         log_section(stage.upper())
                         last_stage[0] = stage
@@ -601,7 +813,7 @@ if HAS_GRADIO:
                 # Run restoration
                 log_section("PROCESSING")
                 log(f"Starting video restoration...")
-                progress(0.05, desc="Starting...")
+                progress(0.05)  # No desc - avoids overlay
 
                 result = restorer.restore_video(
                     source=source,
@@ -818,6 +1030,12 @@ if HAS_GRADIO:
                                 info="Apply noise reduction and normalization",
                             )
 
+                            force_cpu = gr.Checkbox(
+                                value=False,
+                                label="⚠️ Force CPU Mode",
+                                info="Use CPU instead of GPU (VERY slow, use only if GPU fails)",
+                            )
+
                             with gr.Accordion("Advanced Options", open=False):
                                 model_download_dir = gr.Textbox(
                                     label="Model Download Location",
@@ -825,9 +1043,55 @@ if HAS_GRADIO:
                                     info="Where AI models are downloaded (leave empty for default)",
                                 )
 
+                                gr.Markdown("### 🎞️ Frame Deduplication")
+                                gr.Markdown(
+                                    "*For old films digitized at higher FPS with duplicate frames (e.g., 18fps film uploaded as 25fps)*"
+                                )
+
+                                enable_deduplication = gr.Checkbox(
+                                    value=False,
+                                    label="Enable Frame Deduplication",
+                                    info="Extract unique frames only - dramatically speeds up processing for padded footage",
+                                )
+
+                                deduplication_threshold = gr.Slider(
+                                    minimum=0.90,
+                                    maximum=0.99,
+                                    value=0.98,
+                                    step=0.01,
+                                    label="Similarity Threshold",
+                                    info="0.98 = strict (catches most duplicates), 0.95 = lenient (handles compression artifacts)",
+                                    visible=False,
+                                )
+
+                                dedup_info = gr.Markdown(
+                                    """
+**How it works:**
+1. Analyzes all frames to detect duplicates (e.g., 18fps film padded to 25fps)
+2. Enhances only unique frames (saves 30-50% processing time)
+3. RIFE interpolates back to smooth motion
+4. Reconstructs final video at target FPS
+
+**Recommended workflow for old films:**
+- ✅ Enable Deduplication
+- ✅ Enable Frame Interpolation (RIFE)
+- Set Target FPS to 24 for natural motion
+                                    """,
+                                    visible=False,
+                                )
+
+                                enable_deduplication.change(
+                                    fn=lambda x: [gr.update(visible=x), gr.update(visible=x)],
+                                    inputs=enable_deduplication,
+                                    outputs=[deduplication_threshold, dedup_info],
+                                )
+
+                                gr.Markdown("---")
+                                gr.Markdown("### 🎬 Frame Interpolation (RIFE)")
+
                                 interpolate = gr.Checkbox(
                                     value=False,
-                                    label="Frame Interpolation (RIFE)",
+                                    label="Enable Frame Interpolation",
                                     info="Smoothly increase frame rate using AI",
                                 )
 
@@ -908,23 +1172,38 @@ if HAS_GRADIO:
                                     outputs=watermark_auto_detect,
                                 )
 
-                    restore_btn = gr.Button(
-                        "🚀 Start Restoration",
-                        variant="primary",
-                        size="lg",
-                    )
+                    with gr.Row():
+                        restore_btn = gr.Button(
+                            "🚀 Start Restoration",
+                            variant="primary",
+                            size="lg",
+                        )
+                        stop_btn = gr.Button(
+                            "⏹️ Stop",
+                            variant="stop",
+                            size="lg",
+                        )
+
+                    # Status bar - separate from log to avoid overlay issues
+                    with gr.Row():
+                        status_text = gr.Markdown(
+                            value="*Ready to process*",
+                            elem_id="status-bar",
+                        )
 
                     with gr.Row():
-                        with gr.Column():
+                        with gr.Column(scale=1):
                             output_video = gr.Video(label="Restored Video")
-                        with gr.Column():
+                        with gr.Column(scale=1):
                             log_output = gr.Textbox(
                                 label="Processing Log",
-                                lines=15,
+                                lines=20,
+                                max_lines=30,
                                 interactive=False,
+                                autoscroll=True,
                             )
 
-                    restore_btn.click(
+                    restore_event = restore_btn.click(
                         fn=restore_video,
                         inputs=[
                             input_video,
@@ -935,15 +1214,30 @@ if HAS_GRADIO:
                             model,
                             crf,
                             enhance_audio,
+                            force_cpu,
                             model_download_dir,
                             interpolate,
                             target_fps,
+                            enable_deduplication,
+                            deduplication_threshold,
                             enable_colorization,
                             colorization_model,
                             enable_watermark_removal,
                             watermark_auto_detect,
                         ],
                         outputs=[output_video, log_output],
+                    )
+
+                    # Stop button cancels the restoration (preserves existing log)
+                    def cancel_with_log(current_log):
+                        cancelled_msg = "\n\n" + "=" * 50 + "\n  ⏹️ CANCELLED BY USER\n" + "=" * 50
+                        return None, (current_log or "") + cancelled_msg
+
+                    stop_btn.click(
+                        fn=cancel_with_log,
+                        inputs=[log_output],
+                        outputs=[output_video, log_output],
+                        cancels=[restore_event],
                     )
 
                     # Analyze Video button - detects content type and recommends settings
@@ -1239,6 +1533,8 @@ if HAS_GRADIO:
                         | **AI Model** | See model guide below |
                         | **Quality (CRF)** | 15-18 for archival, 20-23 for web sharing |
                         | **Enhance Audio** | Removes hiss, rumble, normalizes volume |
+                        | **Frame Interpolation** | RIFE AI to increase frame rate smoothly |
+                        | **Frame Deduplication** | Detect & skip duplicate frames (for old films padded to higher FPS) |
                         | **Model Download Location** | Custom folder for AI model files (Advanced Options) |
                         | **Colorization** | AI-powered colorization for B&W footage (DDColor/DeOldify) |
                         | **Watermark Removal** | Remove logos/watermarks using AI inpainting |
@@ -1265,6 +1561,32 @@ if HAS_GRADIO:
                         - Keep **enhance audio** on - old recordings are noisy
                         - For silent films, the pipeline handles missing audio gracefully
                         - Processing time: expect 2-10x the video length
+
+                        ### Frame Deduplication Guide
+
+                        **When to use:** Old films (1890s-1920s) were shot at 16-18 fps but are often
+                        digitized/uploaded at 24-30 fps with duplicate frames inserted. This wastes
+                        processing time enhancing the same frame multiple times.
+
+                        **How it works:**
+                        1. Analyzes all frames using perceptual hashing
+                        2. Detects duplicates (e.g., 25fps video with only 18 unique frames per second)
+                        3. Enhances only unique frames (30-50% faster!)
+                        4. RIFE interpolates to create smooth motion at target FPS
+                        5. Reconstructs final video
+
+                        **Recommended settings for old films:**
+                        | Setting | Value | Why |
+                        |---------|-------|-----|
+                        | **Enable Deduplication** | ✅ Yes | Saves 30-50% processing time |
+                        | **Similarity Threshold** | 0.98 | Catches most duplicates |
+                        | **Enable Interpolation** | ✅ Yes | Smooth motion from unique frames |
+                        | **Target FPS** | 24 | Natural motion for vintage footage |
+
+                        **Threshold guide:**
+                        - **0.98-0.99**: Strict - only exact/near-exact duplicates
+                        - **0.95-0.97**: Moderate - handles some compression artifacts
+                        - **0.90-0.94**: Lenient - for heavily compressed sources
 
                         ### Colorization Guide
 

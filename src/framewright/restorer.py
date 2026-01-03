@@ -4,6 +4,7 @@ Includes robust error handling, checkpointing, and quality validation.
 """
 import json
 import logging
+import os
 import platform
 import shutil
 import subprocess
@@ -186,6 +187,8 @@ from .errors import (
     DiskSpaceError,
     FatalError,
     DependencyError,
+    GPURequiredError,
+    CPUFallbackError,
     ErrorContext,
     ErrorReport,
     RetryableOperation,
@@ -201,9 +204,12 @@ from .validators import (
 )
 from .utils.gpu import (
     get_gpu_memory_info,
+    get_best_gpu,
+    get_all_gpus_multivendor,
     calculate_optimal_tile_size,
     get_adaptive_tile_sequence,
     VRAMMonitor,
+    GPUVendor,
 )
 from .utils.disk import (
     validate_disk_space,
@@ -219,6 +225,11 @@ from .processors.ncnn_vulkan import (
     NcnnVulkanConfig,
     get_ncnn_vulkan_path,
     is_ncnn_vulkan_available,
+)
+from .processors.deduplication import (
+    FrameDeduplicator,
+    DeduplicationConfig,
+    DeduplicationResult,
 )
 
 
@@ -274,6 +285,7 @@ class VideoRestorer:
         self._error_report = ErrorReport()
         self._video_analysis: Optional[VideoAnalysis] = None
         self._enhance_result: Optional[AdaptiveEnhanceResult] = None
+        self._dedup_result: Optional[DeduplicationResult] = None
 
         # Progress tracking state
         self._stage_start_times: Dict[str, float] = {}
@@ -323,6 +335,72 @@ class VideoRestorer:
 
         # Store dependency info for later use
         self._dependency_report = report
+
+    def _validate_gpu_available(self) -> None:
+        """Pre-flight GPU validation to prevent CPU fallback.
+
+        When require_gpu=True, this ensures a GPU is available and working
+        before processing begins. Prevents runaway CPU usage.
+
+        Raises:
+            GPURequiredError: If GPU is required but not available or not working
+        """
+        if not self.config.require_gpu:
+            logger.info("GPU requirement disabled - CPU fallback allowed")
+            return
+
+        logger.info("Validating GPU availability (require_gpu=True)...")
+
+        # Check if any GPU is available
+        gpus = get_all_gpus_multivendor()
+
+        if not gpus:
+            raise GPURequiredError(
+                "No GPU detected but require_gpu=True. "
+                "Processing would fall back to CPU which can freeze your system. "
+                "Options:\n"
+                "  1. Install/enable a GPU with Vulkan support\n"
+                "  2. Set require_gpu=False to allow CPU processing (not recommended)\n"
+                "  3. Check GPU drivers are installed correctly"
+            )
+
+        # Get the best GPU
+        best_gpu = get_best_gpu()
+        if not best_gpu:
+            raise GPURequiredError(
+                "GPU detected but not accessible. Check drivers and permissions."
+            )
+
+        # Check for ncnn-vulkan (required for GPU processing)
+        if not is_ncnn_vulkan_available():
+            raise GPURequiredError(
+                f"GPU found ({best_gpu.name}) but realesrgan-ncnn-vulkan not installed. "
+                "This is required for GPU acceleration. Install with:\n"
+                "  python -c \"from framewright.processors.ncnn_vulkan import install_ncnn_vulkan; install_ncnn_vulkan()\""
+            )
+
+        # Check for minimum VRAM
+        min_vram_mb = 1024  # Minimum 1GB VRAM for basic processing
+        if best_gpu.total_memory_mb < min_vram_mb:
+            raise GPURequiredError(
+                f"GPU {best_gpu.name} has only {best_gpu.total_memory_mb}MB VRAM. "
+                f"Minimum {min_vram_mb}MB required for GPU processing. "
+                "Consider using a GPU with more VRAM or set require_gpu=False."
+            )
+
+        # Check for Vulkan support (required by ncnn-vulkan)
+        if not best_gpu.vulkan_supported:
+            raise GPURequiredError(
+                f"GPU {best_gpu.name} does not support Vulkan. "
+                "Vulkan is required for ncnn-vulkan acceleration. "
+                "Install Vulkan drivers or use a Vulkan-capable GPU."
+            )
+
+        logger.info(
+            f"GPU validated: {best_gpu.name} "
+            f"({best_gpu.vendor.value}, {best_gpu.total_memory_mb}MB VRAM, "
+            f"Vulkan: {'Yes' if best_gpu.vulkan_supported else 'No'})"
+        )
 
     def _update_progress(
         self,
@@ -982,6 +1060,131 @@ class VideoRestorer:
         except subprocess.TimeoutExpired:
             raise FrameExtractionError("Frame extraction timed out")
 
+    def deduplicate_frames(self) -> DeduplicationResult:
+        """Detect and extract unique frames, removing duplicates.
+
+        For historical films (e.g., 1909 film at 18fps uploaded as 25fps),
+        this detects duplicate frames added during frame rate conversion
+        and extracts only unique frames for enhancement.
+
+        This can significantly reduce processing time by only enhancing
+        unique frames, then reconstructing the full sequence afterward.
+
+        Returns:
+            DeduplicationResult with frame mapping and statistics
+
+        Raises:
+            ValueError: If no frames found or deduplication fails
+        """
+        self._update_progress("deduplicate", 0.0)
+        logger.info("Analyzing frames for duplicates...")
+
+        # Get video FPS for analysis
+        target_fps = self.metadata.get('framerate', 25.0)
+
+        # Configure deduplicator
+        dedup_config = DeduplicationConfig(
+            similarity_threshold=self.config.deduplication_threshold,
+            use_perceptual_hash=True,
+            expected_source_fps=self.config.expected_source_fps,
+        )
+
+        deduplicator = FrameDeduplicator(dedup_config)
+
+        # Progress callback wrapper
+        def progress_cb(progress: float) -> None:
+            self._update_progress("deduplicate", progress * 0.5)  # First 50% for analysis
+
+        # Analyze frames
+        result = deduplicator.analyze_frames(
+            self.config.frames_dir,
+            target_fps=target_fps,
+            progress_callback=progress_cb,
+        )
+
+        if result.unique_frames == 0:
+            raise ValueError("No unique frames detected - check deduplication threshold")
+
+        logger.info(result.summary())
+
+        # Extract unique frames to separate directory
+        def extract_progress_cb(progress: float) -> None:
+            self._update_progress("deduplicate", 0.5 + progress * 0.5)  # Second 50%
+
+        self.config.unique_frames_dir.mkdir(parents=True, exist_ok=True)
+
+        deduplicator.extract_unique_frames(
+            self.config.frames_dir,
+            self.config.unique_frames_dir,
+            result=result,
+            target_fps=target_fps,
+            progress_callback=extract_progress_cb,
+        )
+
+        # Store result for later reconstruction
+        self._dedup_result = result
+
+        self._update_progress("deduplicate", 1.0)
+        logger.info(
+            f"Extracted {result.unique_frames} unique frames "
+            f"(estimated original FPS: {result.estimated_original_fps:.1f})"
+        )
+
+        return result
+
+    def reconstruct_frames(self) -> int:
+        """Reconstruct full frame sequence from enhanced unique frames.
+
+        After enhancing only unique frames, this reconstructs the full
+        sequence by copying enhanced frames to their duplicate positions.
+
+        Must be called after enhance_frames() when deduplication was used.
+
+        Returns:
+            Total number of reconstructed frames
+
+        Raises:
+            ValueError: If no deduplication result available
+        """
+        if self._dedup_result is None:
+            raise ValueError("No deduplication result - call deduplicate_frames() first")
+
+        self._update_progress("reconstruct", 0.0)
+        logger.info("Reconstructing full frame sequence from enhanced unique frames...")
+
+        deduplicator = FrameDeduplicator()
+
+        # Create reconstruction output directory
+        reconstructed_dir = self.config.temp_dir / "reconstructed"
+        reconstructed_dir.mkdir(parents=True, exist_ok=True)
+
+        def progress_cb(progress: float) -> None:
+            self._update_progress("reconstruct", progress)
+
+        deduplicator.reconstruct_sequence(
+            self.config.enhanced_dir,
+            reconstructed_dir,
+            self._dedup_result,
+            progress_callback=progress_cb,
+        )
+
+        # Move reconstructed frames to enhanced_dir (replacing unique-only frames)
+        # First, clear enhanced_dir
+        for f in self.config.enhanced_dir.glob("frame_*.png"):
+            f.unlink()
+
+        # Move reconstructed frames
+        for f in reconstructed_dir.glob("frame_*.png"):
+            shutil.move(str(f), self.config.enhanced_dir / f.name)
+
+        # Clean up
+        shutil.rmtree(reconstructed_dir)
+
+        self._update_progress("reconstruct", 1.0)
+        logger.info(f"Reconstructed {self._dedup_result.total_frames} frames")
+
+        return self._dedup_result.total_frames
+
     def _get_ncnn_vulkan_binary(self) -> Optional[Path]:
         """Get the path to the ncnn-vulkan binary.
 
@@ -1022,6 +1225,10 @@ class VideoRestorer:
 
         Returns:
             Tuple of (output_path, success, error_message)
+
+        Note:
+            Includes CPU fallback detection when require_gpu=True to prevent
+            runaway CPU usage that can freeze the system.
         """
         output_path = output_dir / input_path.name
 
@@ -1052,11 +1259,38 @@ class VideoRestorer:
         if tile_size > 0:
             cmd.extend(['-t', str(tile_size)])
 
+        # GPU/CPU mode selection
+        if self.config.require_gpu:
+            gpu_id = self.config.gpu_id if self.config.gpu_id is not None else 0
+            cmd.extend(['-g', str(gpu_id)])
+            logger.debug(f"Explicit GPU selection: GPU {gpu_id}")
+        else:
+            # Force CPU mode with -g -1
+            cmd.extend(['-g', '-1'])
+            logger.debug("Forcing CPU mode (-g -1)")
+
+        # CPU fallback indicators to detect if ncnn-vulkan falls back to CPU
+        cpu_fallback_indicators = [
+            "using cpu", "no vulkan device", "vulkan not found",
+            "failed to create gpu instance", "cpu mode", "fallback to cpu"
+        ]
+
         try:
             # Use CREATE_NO_WINDOW on Windows to avoid console popups
             creationflags = 0
             if hasattr(subprocess, 'CREATE_NO_WINDOW'):
                 creationflags = subprocess.CREATE_NO_WINDOW
+
+            # Set environment variables for Vulkan compatibility
+            env = os.environ.copy()
+            # Fix for AMD switchable graphics causing vkEnumeratePhysicalDevices to fail
+            env['DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1'] = '1'
+            # Disable problematic AMD switchable graphics Vulkan layer
+            env['VK_LOADER_LAYERS_DISABLE'] = 'VK_LAYER_AMD_switchable_graphics'
+            # Alternative: disable all implicit layers that might interfere
+            env['VK_LOADER_LAYERS_ENABLE'] = ''
+            # Ensure Vulkan finds the correct GPU
+            env['VK_ICD_FILENAMES'] = env.get('VK_ICD_FILENAMES', '')
 
             result = subprocess.run(
                 cmd,
@@ -1065,7 +1299,22 @@ class VideoRestorer:
                 text=True,
                 timeout=300,  # 5 minute timeout per frame
                 creationflags=creationflags,
+                env=env,
             )
+
+            # Check for CPU fallback in output when GPU is required
+            if self.config.require_gpu:
+                combined_output = f"{result.stdout or ''} {result.stderr or ''}".lower()
+                for indicator in cpu_fallback_indicators:
+                    if indicator in combined_output:
+                        # Delete output if created (don't trust CPU-processed results)
+                        if output_path.exists():
+                            output_path.unlink()
+                        return output_path, False, (
+                            f"CPU fallback detected: '{indicator}'. "
+                            "Processing would use CPU instead of GPU, which can freeze your system. "
+                            "Check GPU drivers, Vulkan installation, or set require_gpu=False."
+                        )
 
             # Validate output
             if not output_path.exists():
@@ -1078,9 +1327,26 @@ class VideoRestorer:
             return output_path, True, None
 
         except subprocess.CalledProcessError as e:
+            error_msg = e.stderr or str(e)
+
+            # Check for CPU fallback in error output
+            if self.config.require_gpu:
+                error_lower = error_msg.lower()
+                for indicator in cpu_fallback_indicators:
+                    if indicator in error_lower:
+                        return output_path, False, (
+                            f"CPU fallback detected in error: '{indicator}'. "
+                            "GPU processing failed and would fall back to CPU."
+                        )
+
             error_class = classify_error(e, e.stderr)
-            return output_path, False, f"{error_class.__name__}: {e.stderr}"
+            return output_path, False, f"{error_class.__name__}: {error_msg}"
         except subprocess.TimeoutExpired:
+            if self.config.require_gpu:
+                return output_path, False, (
+                    "Enhancement timed out (>5 min). "
+                    "This may indicate CPU fallback causing extremely slow processing."
+                )
             return output_path, False, "Enhancement timed out"
 
     def enhance_frames(self) -> int:
@@ -1090,13 +1356,26 @@ class VideoRestorer:
         Uses ThreadPoolExecutor for concurrent frame enhancement when
         parallel_frames > 1.
 
+        When deduplication is enabled, enhances only unique frames from
+        unique_frames_dir instead of all frames from frames_dir.
+
         Returns:
             Number of frames enhanced
 
         Raises:
             EnhancementError: If frame enhancement fails
         """
-        frames = sorted(self.config.frames_dir.glob("frame_*.png"))
+        # Use unique_frames_dir if deduplication was performed
+        if self._dedup_result is not None and self.config.unique_frames_dir.exists():
+            source_dir = self.config.unique_frames_dir
+            logger.info(
+                f"Using deduplicated frames: {self._dedup_result.unique_frames} unique "
+                f"(from {self._dedup_result.total_frames} total)"
+            )
+        else:
+            source_dir = self.config.frames_dir
+
+        frames = sorted(source_dir.glob("frame_*.png"))
         total_frames = len(frames)
 
         if total_frames == 0:
@@ -1593,6 +1872,7 @@ class VideoRestorer:
         self,
         source_dir: Optional[Path] = None,
         target_fps: Optional[float] = None,
+        source_fps: Optional[float] = None,
     ) -> Tuple[Path, float]:
         """Interpolate frames using RIFE to increase frame rate.
 
@@ -1602,6 +1882,9 @@ class VideoRestorer:
         Args:
             source_dir: Directory with frames to interpolate (default: enhanced_dir)
             target_fps: Target frame rate (default: from config or 2x source)
+            source_fps: Source frame rate (default: from metadata). Override this
+                       when interpolating deduplicated frames to specify the
+                       detected original FPS (e.g., 18fps for 1909 film).
 
         Returns:
             Tuple of (output_directory, actual_fps)
@@ -1615,8 +1898,9 @@ class VideoRestorer:
         if not source_dir.exists():
             raise InterpolationError(f"Source directory not found: {source_dir}")
 
-        # Get source FPS from metadata (auto-detected earlier)
-        source_fps = self.metadata.get('framerate', 24.0)
+        # Get source FPS - use provided value or fall back to metadata
+        if source_fps is None:
+            source_fps = self.metadata.get('framerate', 24.0)
 
         # Determine target FPS
         if target_fps is None:
@@ -1903,6 +2187,9 @@ class VideoRestorer:
             # Create necessary directories
             self.config.create_directories()
 
+            # Pre-flight GPU validation (prevents CPU fallback)
+            self._validate_gpu_available()
+
             # Determine processing options
             use_rife = enable_rife if enable_rife is not None else self.config.enable_interpolation
             rife_target_fps = target_fps if target_fps is not None else self.config.target_fps
@@ -1970,6 +2257,14 @@ class VideoRestorer:
             frame_count = self.extract_frames(video_path)
             logger.info(f"Processing {frame_count} frames")
 
+            # Step 5b: Deduplicate frames (for old films with artificial FPS padding)
+            if self.config.enable_deduplication:
+                dedup_result = self.deduplicate_frames()
+                logger.info(
+                    f"Deduplication: {dedup_result.unique_frames}/{frame_count} unique frames "
+                    f"(estimated original FPS: {dedup_result.estimated_original_fps:.1f})"
+                )
+
             # Step 6: Enhance frames (Real-ESRGAN)
             self.enhance_frames()
 
@@ -1979,9 +2274,42 @@ class VideoRestorer:
                 enhance_result = self.auto_enhance_frames()
                 logger.info(f"Auto-enhancement stages: {', '.join(enhance_result.stages_applied)}")
 
-            # Step 7: Frame interpolation (RIFE) - if enabled
+            # Step 7: Frame interpolation or reconstruction
             frames_for_reassembly = self.config.enhanced_dir
-            if use_rife:
+
+            # When deduplication is used, prefer RIFE for smooth motion
+            if self.config.enable_deduplication and self._dedup_result is not None:
+                if use_rife:
+                    # RIFE interpolation: unique enhanced frames → smooth target FPS
+                    # This gives much better results than duplicating frames back
+                    original_fps = self._dedup_result.estimated_original_fps
+                    target = rife_target_fps or self.metadata.get('framerate', 25.0)
+
+                    logger.info(
+                        f"RIFE interpolation: {original_fps:.1f}fps → {target}fps "
+                        f"(smooth motion from {self._dedup_result.unique_frames} unique frames)"
+                    )
+
+                    try:
+                        # Set source FPS to the detected original FPS for proper interpolation
+                        frames_for_reassembly, actual_fps = self.interpolate_frames(
+                            target_fps=target,
+                            source_fps=original_fps,
+                        )
+                        logger.info(f"RIFE interpolation complete: {actual_fps}fps with smooth motion")
+                    except InterpolationError as e:
+                        logger.warning(f"RIFE interpolation failed: {e}")
+                        logger.warning("Falling back to frame reconstruction (duplicate-based)")
+                        self.reconstruct_frames()
+                        frames_for_reassembly = self.config.enhanced_dir
+                else:
+                    # No RIFE: reconstruct by duplicating frames back
+                    logger.info("Reconstructing frames (no RIFE - consider enabling for smoother motion)")
+                    self.reconstruct_frames()
+                    frames_for_reassembly = self.config.enhanced_dir
+
+            elif use_rife:
+                # Standard RIFE interpolation (no deduplication)
                 logger.info("RIFE interpolation enabled")
                 try:
                     frames_for_reassembly, actual_fps = self.interpolate_frames(
