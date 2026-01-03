@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "framewright"
-version = "1.0.0-dev"
+version = "1.4.0"
 description = "AI-powered video restoration and enhancement pipeline with web UI"
 readme = "README.md"
 requires-python = ">=3.9"

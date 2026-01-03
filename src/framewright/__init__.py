@@ -1,5 +1,5 @@
 """FrameWright - Video Restoration Pipeline using Real-ESRGAN."""
-__version__ = "1.3.1"
+__version__ = "1.4.0"
 
 from .config import Config
 from .restorer import VideoRestorer, ProgressInfo
