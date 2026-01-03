@@ -2,7 +2,7 @@
 
 A modular, frame-accurate video restoration pipeline for recovering vintage and degraded footage. Optimized for **100-year-old film fragments** and **YouTube source videos**, combining AI upscaling, colorization, watermark removal, and frame interpolation with an intuitive, reproducible workflow.
 
-**Status:** v1.0.0 (Production Ready)
+**Status:** v1.4.0 (Production Ready)
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
