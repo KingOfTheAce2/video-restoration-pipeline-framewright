@@ -686,6 +686,13 @@ class AzureStorage(CloudStorageProvider):
         return container, blob
 
 
+# Import Google Drive storage
+try:
+    from .gdrive import GoogleDriveStorage
+    _gdrive_available = True
+except ImportError:
+    _gdrive_available = False
+
 # Storage provider registry
 STORAGE_PROVIDERS: Dict[str, Type[CloudStorageProvider]] = {
     "s3": S3Storage,
@@ -693,6 +700,11 @@ STORAGE_PROVIDERS: Dict[str, Type[CloudStorageProvider]] = {
     "gcs": GCSStorage,
     "azure": AzureStorage,
 }
+
+# Add Google Drive if available
+if _gdrive_available:
+    STORAGE_PROVIDERS["gdrive"] = GoogleDriveStorage
+    STORAGE_PROVIDERS["googledrive"] = GoogleDriveStorage
 
 
 def get_storage_provider(
