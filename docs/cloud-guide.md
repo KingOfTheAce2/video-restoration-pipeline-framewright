@@ -40,6 +40,25 @@ framewright cloud submit \
     --gpu RTX_4090
 ```
 
+### B&W Archive (Keep Black & White)
+Best for historical footage - maximum quality, keeps original B&W aesthetic.
+```bash
+framewright cloud submit \
+    --gdrive-input "framewright/input/bw_footage.mp4" \
+    --scale 4 \
+    --quality 15 \
+    --format mp4 \
+    --deduplicate \
+    --dedup-threshold 0.98 \
+    --enable-rife \
+    --target-fps 24 \
+    --audio-enhance \
+    --scratch-sensitivity 0.5 \
+    --grain-reduction 0.15 \
+    --timeout 120 \
+    --gpu RTX_4090
+```
+
 ### Black & White to Color
 ```bash
 framewright cloud submit \
@@ -101,9 +120,21 @@ framewright cloud submit \
 | `--scale`, `-s` | Upscaling factor (2 or 4) | `4` |
 | `--model` | AI enhancement model | `realesrgan-x4plus` |
 | `--quality`, `-q` | CRF quality (0-51, lower=better) | `15` |
-| `--auto-enhance` | Enable all auto enhancements | off |
+| `--auto-enhance` | Enable defect repair + face restore | off |
 | `--no-face-restore` | Disable face restoration | enabled |
 | `--no-defect-repair` | Disable scratch/dust repair | enabled |
+
+**CRF Quality Guide:**
+- `0-12` = Visually lossless (huge files)
+- `15` = Archive quality (recommended)
+- `18` = High quality
+- `23` = Good quality (smaller files)
+- `28+` = Web/streaming
+
+**What `--auto-enhance` does:**
+- Enables defect repair (scratches, dust, dirt)
+- Enables face restoration (GFPGAN)
+- Uses default sensitivity values
 
 ### Frame Processing
 
@@ -128,6 +159,14 @@ framewright cloud submit \
 |------|-------------|---------|
 | `--scratch-sensitivity` | Scratch detection (0-1) | `0.5` |
 | `--grain-reduction` | Film grain reduction (0-1) | `0.3` |
+
+**Defect repair removes:** scratches, dust spots, dirt, film grain artifacts
+
+**Grain reduction guide:**
+- `0.0` = Keep all grain (authentic look)
+- `0.15` = Light reduction (recommended for archive)
+- `0.3` = Moderate (default)
+- `0.5+` = Heavy (can look too smooth)
 
 ### Watermark Removal
 
@@ -190,7 +229,12 @@ Formats: `mkv`, `mp4`, `webm`, `avi`, `mov`
 
 ## Workflow Presets
 
-### Archive Quality (Maximum)
+### B&W Archive (Recommended for Historical)
+```bash
+--scale 4 --quality 15 --format mp4 --deduplicate --dedup-threshold 0.98 --enable-rife --target-fps 24 --audio-enhance --scratch-sensitivity 0.5 --grain-reduction 0.15
+```
+
+### Archive Quality (Maximum - Color)
 ```bash
 --scale 4 --quality 12 --auto-enhance --enable-rife --target-fps 24 --deduplicate --audio-enhance
 ```
@@ -200,12 +244,12 @@ Formats: `mkv`, `mp4`, `webm`, `avi`, `mov`
 --scale 2 --quality 23 --no-face-restore --no-defect-repair
 ```
 
-### Old Film Restoration
+### Old Film Restoration (Heavy Damage)
 ```bash
 --scale 4 --auto-enhance --deduplicate --enable-rife --target-fps 24 --scratch-sensitivity 0.7 --grain-reduction 0.4
 ```
 
-### Silent Film (B&W + No Audio)
+### Silent Film (Colorize)
 ```bash
 --scale 4 --colorize --colorize-model ddcolor --auto-enhance --enable-rife --target-fps 18
 ```
