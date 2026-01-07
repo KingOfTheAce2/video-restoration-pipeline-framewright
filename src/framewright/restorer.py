@@ -226,6 +226,13 @@ from .processors.ncnn_vulkan import (
     get_ncnn_vulkan_path,
     is_ncnn_vulkan_available,
 )
+from .processors.pytorch_realesrgan import (
+    is_pytorch_esrgan_available,
+    enhance_frame_pytorch,
+    PyTorchESRGANConfig,
+    convert_ncnn_model_name,
+    clear_upsampler_cache,
+)
 from .processors.deduplication import (
     FrameDeduplicator,
     DeduplicationConfig,
@@ -1207,7 +1214,120 @@ class VideoRestorer:
 
         return None
 
+    def _get_enhancement_backend(self) -> str:
+        """Determine which enhancement backend to use.
+
+        Order of preference:
+        1. FRAMEWRIGHT_BACKEND environment variable (explicit override)
+        2. PyTorch if available and ncnn-vulkan is not
+        3. ncnn-vulkan (default if available)
+        4. PyTorch as fallback
+
+        Returns:
+            'pytorch' or 'ncnn-vulkan'
+        """
+        # Check environment variable for explicit override
+        env_backend = os.environ.get("FRAMEWRIGHT_BACKEND", "").lower()
+        if env_backend == "pytorch":
+            if is_pytorch_esrgan_available():
+                logger.info("Using PyTorch backend (FRAMEWRIGHT_BACKEND=pytorch)")
+                return "pytorch"
+            else:
+                logger.warning("FRAMEWRIGHT_BACKEND=pytorch but PyTorch Real-ESRGAN not installed")
+        elif env_backend == "ncnn-vulkan" or env_backend == "ncnn":
+            if is_ncnn_vulkan_available():
+                return "ncnn-vulkan"
+            else:
+                logger.warning("FRAMEWRIGHT_BACKEND=ncnn-vulkan but ncnn-vulkan not installed")
+
+        # Auto-detect: prefer ncnn-vulkan if available, otherwise PyTorch
+        if is_ncnn_vulkan_available():
+            return "ncnn-vulkan"
+        elif is_pytorch_esrgan_available():
+            logger.info("ncnn-vulkan not found, using PyTorch backend")
+            return "pytorch"
+
+        # Neither available - will fail later with helpful error
+        return "ncnn-vulkan"
+
     def _enhance_single_frame(
+        self,
+        input_path: Path,
+        output_dir: Path,
+        tile_size: int
+    ) -> Tuple[Path, bool, Optional[str]]:
+        """Enhance a single frame with Real-ESRGAN.
+
+        Supports two backends:
+        - PyTorch: Uses CUDA (best for cloud/Docker with NVIDIA GPUs)
+        - ncnn-vulkan: Uses Vulkan API (supports AMD/Intel/NVIDIA)
+
+        Backend is selected automatically or via FRAMEWRIGHT_BACKEND env var.
+
+        Args:
+            input_path: Path to input frame
+            output_dir: Directory for output
+            tile_size: Tile size for processing
+
+        Returns:
+            Tuple of (output_path, success, error_message)
+
+        Note:
+            Includes CPU fallback detection when require_gpu=True to prevent
+            runaway CPU usage that can freeze the system.
+        """
+        output_path = output_dir / input_path.name
+        backend = self._get_enhancement_backend()
+
+        if backend == "pytorch":
+            return self._enhance_single_frame_pytorch(input_path, output_path, tile_size)
+        else:
+            return self._enhance_single_frame_ncnn(input_path, output_dir, tile_size)
+
+    def _enhance_single_frame_pytorch(
+        self,
+        input_path: Path,
+        output_path: Path,
+        tile_size: int
+    ) -> Tuple[Path, bool, Optional[str]]:
+        """Enhance a single frame using PyTorch Real-ESRGAN (CUDA).
+
+        Args:
+            input_path: Path to input frame
+            output_path: Path for output frame
+            tile_size: Tile size for processing (0 = auto)
+
+        Returns:
+            Tuple of (output_path, success, error_message)
+        """
+        if not is_pytorch_esrgan_available():
+            return output_path, False, (
+                "PyTorch Real-ESRGAN not available. Install with:\n"
+                "  pip install realesrgan basicsr"
+            )
+
+        # Convert ncnn model name to PyTorch model name
+        pytorch_model = convert_ncnn_model_name(self.config.model_name)
+
+        config = PyTorchESRGANConfig(
+            model_name=pytorch_model,
+            scale_factor=self.config.scale_factor,
+            tile_size=tile_size,
+            gpu_id=self.config.gpu_id if self.config.gpu_id is not None else 0,
+        )
+
+        success, error = enhance_frame_pytorch(input_path, output_path, config)
+
+        if success:
+            # Validate output
+            from .utils.frame_validation import validate_frame_integrity
+            validation = validate_frame_integrity(output_path)
+            if not validation.is_valid:
+                return output_path, False, validation.error_message
+
+        return output_path, success, error
+
+    def _enhance_single_frame_ncnn(
         self,
         input_path: Path,
         output_dir: Path,

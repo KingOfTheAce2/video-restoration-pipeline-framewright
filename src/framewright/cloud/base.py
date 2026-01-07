@@ -176,6 +176,9 @@ class ProcessingConfig:
     max_runtime_minutes: int = 120
     priority: str = "medium"
     extra_args: Dict[str, Any] = field(default_factory=dict)
+    # Frame output options (for pipeline/offloading)
+    save_frames: bool = False  # Also upload enhanced frames to cloud storage
+    frames_only: bool = False  # Only output frames, skip video assembly
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for API submission."""
@@ -210,6 +213,8 @@ class ProcessingConfig:
             "gpu_type": self.gpu_type,
             "max_runtime_minutes": self.max_runtime_minutes,
             "priority": self.priority,
+            "save_frames": self.save_frames,
+            "frames_only": self.frames_only,
             **self.extra_args,
         }
 
@@ -247,6 +252,8 @@ class ProcessingConfig:
             "gpu_type",
             "max_runtime_minutes",
             "priority",
+            "save_frames",
+            "frames_only",
         }
         main_args = {k: v for k, v in data.items() if k in known_keys}
         extra_args = {k: v for k, v in data.items() if k not in known_keys}

@@ -352,19 +352,37 @@ class VastAIProvider(CloudProvider):
                 "INPUT_PATH": config.input_path,
                 "OUTPUT_PATH": config.output_path,
                 "RCLONE_CONFIG_B64": rclone_config_b64,
+                # Use PyTorch backend (CUDA) instead of ncnn-vulkan (Vulkan)
+                # PyTorch works reliably in Docker; Vulkan often doesn't
+                "FRAMEWRIGHT_BACKEND": "pytorch",
             }
 
             # Build restoration command with all options
             output_ext = config.output_format or "mkv"
-            restore_cmd = (
-                f"framewright restore "
-                f"--input /workspace/input.mp4 "
-                f"--output /workspace/output.{output_ext} "
-                f"--format {output_ext} "
-                f"--scale {config.scale_factor} "
-                f"--model {config.model_name} "
-                f"--quality {config.crf}"
-            )
+
+            # Determine output mode based on frame options
+            if config.frames_only or config.save_frames:
+                # Use output-dir mode to preserve frames
+                restore_cmd = (
+                    f"framewright restore "
+                    f"--input /workspace/input.mp4 "
+                    f"--output-dir /workspace/project "
+                    f"--format {output_ext} "
+                    f"--scale {config.scale_factor} "
+                    f"--model {config.model_name} "
+                    f"--quality {config.crf}"
+                )
+            else:
+                # Standard mode - output video directly
+                restore_cmd = (
+                    f"framewright restore "
+                    f"--input /workspace/input.mp4 "
+                    f"--output /workspace/output.{output_ext} "
+                    f"--format {output_ext} "
+                    f"--scale {config.scale_factor} "
+                    f"--model {config.model_name} "
+                    f"--quality {config.crf}"
+                )
             # Frame interpolation
             if config.enable_interpolation:
                 restore_cmd += f" --enable-rife --rife-model {config.rife_model}"
@@ -406,6 +424,60 @@ class VastAIProvider(CloudProvider):
                 if config.subtitle_languages:
                     restore_cmd += f" --subtitle-languages {config.subtitle_languages}"
 
+            # Derive frames output path from video output path
+            # e.g., "gdrive:framewright/output/video.mp4" -> "gdrive:framewright/output/video_frames/"
+            output_base = config.output_path.rsplit(".", 1)[0] if "." in config.output_path else config.output_path
+            frames_output_path = f"{output_base}_frames/"
+
+            # Build upload commands based on mode
+            if config.frames_only:
+                # Only upload frames (unique frames if dedup enabled)
+                upload_section = f'''
+echo "=== Uploading enhanced frames to Google Drive ==="
+# Find frames directory (enhanced or frames)
+if [ -d "/workspace/project/enhanced" ]; then
+    FRAMES_DIR="/workspace/project/enhanced"
+elif [ -d "/workspace/project/frames" ]; then
+    FRAMES_DIR="/workspace/project/frames"
+else
+    FRAMES_DIR="/workspace/project"
+fi
+echo "Uploading frames from $FRAMES_DIR"
+rclone copy "$FRAMES_DIR" "{frames_output_path}" --progress
+echo "Frames uploaded to: {frames_output_path}"
+'''
+            elif config.save_frames:
+                # Upload both video AND frames
+                upload_section = f'''
+echo "=== Uploading enhanced frames to Google Drive ==="
+if [ -d "/workspace/project/enhanced" ]; then
+    FRAMES_DIR="/workspace/project/enhanced"
+elif [ -d "/workspace/project/frames" ]; then
+    FRAMES_DIR="/workspace/project/frames"
+else
+    FRAMES_DIR="/workspace/project"
+fi
+echo "Uploading frames from $FRAMES_DIR"
+rclone copy "$FRAMES_DIR" "{frames_output_path}" --progress
+echo "Frames uploaded to: {frames_output_path}"
+
+echo "=== Uploading video to Google Drive ==="
+# Find the output video in project dir
+VIDEO_FILE=$(find /workspace/project -maxdepth 1 -name "*.{output_ext}" | head -1)
+if [ -n "$VIDEO_FILE" ]; then
+    rclone copyto "$VIDEO_FILE" "{config.output_path}" --progress
+    echo "Video uploaded to: {config.output_path}"
+else
+    echo "Warning: No video file found to upload"
+fi
+'''
+            else:
+                # Standard mode - just upload video
+                upload_section = f'''
+echo "=== Uploading result to Google Drive ==="
+rclone copyto /workspace/output.{output_ext} "{config.output_path}" --progress
+'''
+
             # Create startup script
             onstart_script = f"""#!/bin/bash
 set -e
@@ -418,24 +490,23 @@ echo "=== Configuring rclone ==="
 mkdir -p ~/.config/rclone
 echo "$RCLONE_CONFIG_B64" | base64 -d > ~/.config/rclone/rclone.conf
 
-echo "=== Installing Real-ESRGAN ==="
-wget -q https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-ubuntu.zip -O /tmp/realesrgan.zip
-unzip -q /tmp/realesrgan.zip -d /tmp/realesrgan
-mv /tmp/realesrgan/realesrgan-ncnn-vulkan /usr/local/bin/
-chmod +x /usr/local/bin/realesrgan-ncnn-vulkan
+echo "=== Installing Real-ESRGAN (PyTorch/CUDA) ==="
+# Use PyTorch Real-ESRGAN which works with CUDA (already in PyTorch Docker)
+# This avoids Vulkan issues that occur in Docker containers
+pip install realesrgan basicsr
 
 echo "=== Installing FrameWright ==="
 pip install git+https://github.com/KingOfTheAce2/video-restoration-pipeline-framewright.git yt-dlp
+
+# Force PyTorch backend (uses CUDA instead of Vulkan)
+export FRAMEWRIGHT_BACKEND=pytorch
 
 echo "=== Downloading input from Google Drive ==="
 rclone copyto "{config.input_path}" /workspace/input.mp4 --progress
 
 echo "=== Starting restoration ==="
 {restore_cmd}
-
-echo "=== Uploading result to Google Drive ==="
-rclone copyto /workspace/output.{output_ext} "{config.output_path}" --progress
-
+{upload_section}
 echo "=== Done! Shutting down instance ==="
 # Auto-destroy to avoid idle billing
 vastai destroy instance $VAST_CONTAINERLABEL || true

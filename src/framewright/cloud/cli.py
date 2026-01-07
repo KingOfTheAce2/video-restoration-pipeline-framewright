@@ -297,6 +297,9 @@ def cloud_submit(args) -> int:
             # Cloud settings
             gpu_type=args.gpu,
             max_runtime_minutes=args.timeout,
+            # Frame output options
+            save_frames=getattr(args, 'save_frames', False),
+            frames_only=getattr(args, 'frames_only', False),
         )
 
         # Get cost estimate
@@ -761,6 +764,12 @@ def setup_cloud_parser(subparsers) -> None:
                                help='OCR engine for subtitle detection (default: auto)')
     submit_parser.add_argument('--subtitle-languages', type=str,
                                help='Languages for subtitle detection (comma-separated)')
+    # Frame output options (pipeline mode)
+    submit_parser.add_argument('--save-frames', action='store_true',
+                               help='Also upload enhanced frames to cloud (for pipeline workflows)')
+    submit_parser.add_argument('--frames-only', action='store_true',
+                               help='Only output frames, skip video assembly (saves GPU time)')
+    # Storage options
     submit_parser.add_argument('--storage-remote', type=str, default='gdrive',
                                help='rclone remote name (default: gdrive)')
     submit_parser.add_argument('--storage-path', type=str, default='framewright',
