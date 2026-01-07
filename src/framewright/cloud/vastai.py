@@ -496,7 +496,8 @@ echo "=== Installing Real-ESRGAN (PyTorch/CUDA) ==="
 pip install realesrgan basicsr
 
 echo "=== Installing FrameWright ==="
-pip install git+https://github.com/KingOfTheAce2/video-restoration-pipeline-framewright.git yt-dlp
+# imagehash is required for frame deduplication
+pip install git+https://github.com/KingOfTheAce2/video-restoration-pipeline-framewright.git yt-dlp imagehash
 
 # Force PyTorch backend (uses CUDA instead of Vulkan)
 export FRAMEWRIGHT_BACKEND=pytorch
