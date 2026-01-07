@@ -261,6 +261,8 @@ def restore_video(args):
             output_format=output_format,
             enable_checkpointing=True,
             enable_validation=True,
+            enable_deduplication=getattr(args, 'deduplicate', False),
+            deduplication_threshold=getattr(args, 'dedup_threshold', 0.98),
             enable_interpolation=args.enable_rife,
             target_fps=args.target_fps,
             rife_model=args.rife_model,
@@ -1747,6 +1749,11 @@ Examples:
     restore_parser.add_argument('--model', type=str, default='realesrgan-x4plus', help='AI model to use')
     restore_parser.add_argument('--quality', type=int, default=18, help='CRF quality (lower=better, default: 18)')
     restore_parser.add_argument('--audio-enhance', action='store_true', help='Enable audio enhancement')
+    # Frame deduplication options (for old film with padded frames)
+    restore_parser.add_argument('--deduplicate', action='store_true',
+                               help='Enable frame deduplication (removes duplicate frames from padded video)')
+    restore_parser.add_argument('--dedup-threshold', type=float, default=0.98,
+                               help='Similarity threshold for deduplication (0.9-1.0, default: 0.98)')
     # RIFE frame interpolation options
     restore_parser.add_argument('--enable-rife', action='store_true',
                                help='Enable RIFE frame interpolation (increases frame rate)')
@@ -2086,6 +2093,13 @@ Examples:
                                    help='Shell to install completion for')
     completion_parser.set_defaults(func=install_completion)
 
+    # Cloud processing commands (Vast.ai + Google Drive)
+    try:
+        from .cloud.cli import setup_cloud_parser
+        setup_cloud_parser(subparsers)
+    except ImportError:
+        pass  # Cloud module not available
+
     # Legacy --install-completion flag (for compatibility)
     parser.add_argument('--install-completion', type=str, choices=['bash', 'zsh', 'fish'],
                        metavar='SHELL', help='Install shell completion (bash, zsh, fish)')
@@ -2275,6 +2289,26 @@ def main():
         print("  framewright config get defaults.scale_factor")
         print("  framewright config set defaults.scale_factor 2")
         print("  framewright config init")
+        sys.exit(0)
+
+    # Handle cloud command without action
+    if args.command == 'cloud' and (not hasattr(args, 'cloud_action') or args.cloud_action is None):
+        print_header()
+        print_colored("Usage: framewright cloud <action>", Colors.OKBLUE)
+        print_colored("\nCloud GPU processing with Vast.ai + Google Drive", Colors.OKCYAN)
+        print_colored("\nAvailable actions:", Colors.BOLD)
+        print("  submit    Submit video for cloud processing")
+        print("  status    Check job status")
+        print("  gpus      List available GPUs with pricing")
+        print("  jobs      List all cloud jobs")
+        print("  cancel    Cancel a running job")
+        print("  balance   Check Vast.ai credit balance")
+        print("  download  Download completed job result")
+        print_colored("\nExamples:", Colors.OKCYAN)
+        print("  framewright cloud submit --input video.mp4 --scale 4")
+        print("  framewright cloud status fw_abc123")
+        print("  framewright cloud gpus")
+        print("  framewright cloud balance")
         sys.exit(0)
 
     print_header()

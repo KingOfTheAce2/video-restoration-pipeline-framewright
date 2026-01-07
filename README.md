@@ -577,6 +577,84 @@ framewright restore \
     --generate-report                # Create improvements.md
 ```
 
+### Cloud GPU Processing (Vast.ai)
+
+Process videos on cloud GPUs without local hardware. Videos stay on Google Drive - zero local storage used.
+
+**Setup (one-time):**
+```bash
+# Configure Google Drive access
+rclone config  # Create remote named "gdrive"
+
+# Set Vast.ai API key
+echo "VASTAI_API_KEY=your_key_here" > ~/.framewright/vastai.env
+```
+
+**Basic Cloud Restore:**
+```bash
+# Upload video to Google Drive first, then:
+framewright cloud submit \
+    --gdrive-input "framewright/input/video.mp4" \
+    --scale 4 \
+    --quality 15 \
+    --gpu RTX_4090 \
+    --yes
+```
+
+**Archive Quality (1909 B&W Film):**
+```bash
+framewright cloud submit \
+    --gdrive-input "framewright/input/Moscow_clad_in_snow_1909.mp4" \
+    --scale 4 \
+    --quality 15 \
+    --format mkv \
+    --deduplicate \
+    --dedup-threshold 0.98 \
+    --enable-rife \
+    --target-fps 25 \
+    --rife-model rife-v4.6 \
+    --auto-enhance \
+    --scratch-sensitivity 0.6 \
+    --grain-reduction 0.15 \
+    --audio-enhance \
+    --gpu RTX_4090 \
+    --yes
+```
+
+**Full Archive with Colorization:**
+```bash
+framewright cloud submit \
+    --gdrive-input "framewright/input/old_bw_film.mp4" \
+    --scale 4 \
+    --quality 15 \
+    --colorize \
+    --colorize-model ddcolor \
+    --deduplicate \
+    --enable-rife \
+    --target-fps 25 \
+    --auto-enhance \
+    --remove-watermark \
+    --watermark-auto-detect \
+    --audio-enhance \
+    --gpu RTX_4090 \
+    --yes
+```
+
+**Cloud Commands:**
+```bash
+framewright cloud gpus      # List available GPUs & pricing
+framewright cloud balance   # Check Vast.ai credit balance
+framewright cloud status <job_id>  # Check job progress
+framewright cloud jobs      # List all jobs
+framewright cloud cancel <job_id>  # Cancel a running job
+```
+
+**Features:**
+- ✅ Auto-installs all dependencies on cloud instance
+- ✅ Auto-destroys instance when done (no idle billing)
+- ✅ Copies your rclone config for Google Drive access
+- ✅ RTX 4090 @ ~$0.30/hr, H100 @ ~$1.60/hr
+
 ---
 
 ## Python API

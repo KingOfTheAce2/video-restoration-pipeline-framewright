@@ -139,13 +139,39 @@ class ProcessingConfig:
 
     input_path: str
     output_path: str
-    scale_factor: int = 2
+    scale_factor: int = 4  # Archive quality default
     model_name: str = "realesrgan-x4plus"
-    crf: int = 18
+    crf: int = 15  # Archive quality default (lower = better)
+    output_format: str = "mkv"
+    # Frame interpolation
     enable_interpolation: bool = False
     target_fps: Optional[float] = None
+    rife_model: str = "rife-v4.6"
+    # Colorization
     enable_colorization: bool = False
+    colorize_model: str = "deoldify"
+    # Auto enhancement
     enable_auto_enhance: bool = False
+    no_face_restore: bool = False
+    no_defect_repair: bool = False
+    scratch_sensitivity: float = 0.5
+    grain_reduction: float = 0.3
+    # Deduplication
+    enable_deduplicate: bool = False
+    dedup_threshold: float = 0.98
+    # Audio
+    enable_audio_enhance: bool = False
+    # Watermark removal
+    enable_watermark_removal: bool = False
+    watermark_mask: Optional[str] = None
+    watermark_region: Optional[str] = None
+    watermark_auto_detect: bool = False
+    # Subtitle removal
+    enable_subtitle_removal: bool = False
+    subtitle_region: str = "bottom_third"
+    subtitle_ocr: str = "auto"
+    subtitle_languages: Optional[str] = None
+    # Cloud settings
     gpu_type: str = "RTX_4090"
     max_runtime_minutes: int = 120
     priority: str = "medium"
@@ -159,10 +185,28 @@ class ProcessingConfig:
             "scale_factor": self.scale_factor,
             "model_name": self.model_name,
             "crf": self.crf,
+            "output_format": self.output_format,
             "enable_interpolation": self.enable_interpolation,
             "target_fps": self.target_fps,
+            "rife_model": self.rife_model,
             "enable_colorization": self.enable_colorization,
+            "colorize_model": self.colorize_model,
             "enable_auto_enhance": self.enable_auto_enhance,
+            "no_face_restore": self.no_face_restore,
+            "no_defect_repair": self.no_defect_repair,
+            "scratch_sensitivity": self.scratch_sensitivity,
+            "grain_reduction": self.grain_reduction,
+            "enable_deduplicate": self.enable_deduplicate,
+            "dedup_threshold": self.dedup_threshold,
+            "enable_audio_enhance": self.enable_audio_enhance,
+            "enable_watermark_removal": self.enable_watermark_removal,
+            "watermark_mask": self.watermark_mask,
+            "watermark_region": self.watermark_region,
+            "watermark_auto_detect": self.watermark_auto_detect,
+            "enable_subtitle_removal": self.enable_subtitle_removal,
+            "subtitle_region": self.subtitle_region,
+            "subtitle_ocr": self.subtitle_ocr,
+            "subtitle_languages": self.subtitle_languages,
             "gpu_type": self.gpu_type,
             "max_runtime_minutes": self.max_runtime_minutes,
             "priority": self.priority,
@@ -178,10 +222,28 @@ class ProcessingConfig:
             "scale_factor",
             "model_name",
             "crf",
+            "output_format",
             "enable_interpolation",
             "target_fps",
+            "rife_model",
             "enable_colorization",
+            "colorize_model",
             "enable_auto_enhance",
+            "no_face_restore",
+            "no_defect_repair",
+            "scratch_sensitivity",
+            "grain_reduction",
+            "enable_deduplicate",
+            "dedup_threshold",
+            "enable_audio_enhance",
+            "enable_watermark_removal",
+            "watermark_mask",
+            "watermark_region",
+            "watermark_auto_detect",
+            "enable_subtitle_removal",
+            "subtitle_region",
+            "subtitle_ocr",
+            "subtitle_languages",
             "gpu_type",
             "max_runtime_minutes",
             "priority",

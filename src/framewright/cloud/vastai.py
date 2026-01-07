@@ -23,7 +23,7 @@ from .base import (
 
 # Default Vast.ai Docker image for FrameWright
 FRAMEWRIGHT_VASTAI_IMAGE = os.environ.get(
-    "FRAMEWRIGHT_VASTAI_IMAGE", "framewright/processor:latest"
+    "FRAMEWRIGHT_VASTAI_IMAGE", "pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime"
 )
 
 # GPU type mappings for cost optimization
@@ -264,7 +264,8 @@ class VastAIProvider(CloudProvider):
                 "inet_up": {"gte": min_upload_speed},
                 "inet_down": {"gte": min_download_speed},
                 "dph_total": {"lte": max_price_per_hour},
-                "gpu_name": {"contains": gpu_type},
+                # Normalize GPU name (RTX_4090 -> RTX 4090)
+                "gpu_name": {"eq": gpu_type.replace("_", " ")},
             }
 
             data = self._make_request(
@@ -335,13 +336,110 @@ class VastAIProvider(CloudProvider):
 
             offer_id = offer["id"]
 
+            # Get rclone config for Google Drive access
+            import base64
+            rclone_config_path = Path.home() / ".config" / "rclone" / "rclone.conf"
+            rclone_config_b64 = ""
+            if rclone_config_path.exists():
+                rclone_config_b64 = base64.b64encode(
+                    rclone_config_path.read_bytes()
+                ).decode()
+
             # Prepare environment variables for the container
             env_vars = {
                 "FRAMEWRIGHT_JOB_ID": job_id,
                 "FRAMEWRIGHT_CONFIG": json.dumps(config.to_dict()),
                 "INPUT_PATH": config.input_path,
                 "OUTPUT_PATH": config.output_path,
+                "RCLONE_CONFIG_B64": rclone_config_b64,
             }
+
+            # Build restoration command with all options
+            output_ext = config.output_format or "mkv"
+            restore_cmd = (
+                f"framewright restore "
+                f"--input /workspace/input.mp4 "
+                f"--output /workspace/output.{output_ext} "
+                f"--format {output_ext} "
+                f"--scale {config.scale_factor} "
+                f"--model {config.model_name} "
+                f"--quality {config.crf}"
+            )
+            # Frame interpolation
+            if config.enable_interpolation:
+                restore_cmd += f" --enable-rife --rife-model {config.rife_model}"
+                if config.target_fps:
+                    restore_cmd += f" --target-fps {config.target_fps}"
+            # Colorization
+            if config.enable_colorization:
+                restore_cmd += f" --colorize --colorize-model {config.colorize_model}"
+            # Auto enhancement
+            if config.enable_auto_enhance:
+                restore_cmd += " --auto-enhance"
+            if config.no_face_restore:
+                restore_cmd += " --no-face-restore"
+            if config.no_defect_repair:
+                restore_cmd += " --no-defect-repair"
+            if config.scratch_sensitivity != 0.5:
+                restore_cmd += f" --scratch-sensitivity {config.scratch_sensitivity}"
+            if config.grain_reduction != 0.3:
+                restore_cmd += f" --grain-reduction {config.grain_reduction}"
+            # Deduplication
+            if config.enable_deduplicate:
+                restore_cmd += f" --deduplicate --dedup-threshold {config.dedup_threshold}"
+            # Audio
+            if config.enable_audio_enhance:
+                restore_cmd += " --audio-enhance"
+            # Watermark removal
+            if config.enable_watermark_removal:
+                restore_cmd += " --remove-watermark"
+                if config.watermark_mask:
+                    restore_cmd += f" --watermark-mask {config.watermark_mask}"
+                if config.watermark_region:
+                    restore_cmd += f" --watermark-region {config.watermark_region}"
+                if config.watermark_auto_detect:
+                    restore_cmd += " --watermark-auto-detect"
+            # Subtitle removal
+            if config.enable_subtitle_removal:
+                restore_cmd += f" --remove-subtitles --subtitle-region {config.subtitle_region}"
+                restore_cmd += f" --subtitle-ocr {config.subtitle_ocr}"
+                if config.subtitle_languages:
+                    restore_cmd += f" --subtitle-languages {config.subtitle_languages}"
+
+            # Create startup script
+            onstart_script = f"""#!/bin/bash
+set -e
+cd /workspace
+
+echo "=== Installing dependencies ==="
+apt-get update && apt-get install -y ffmpeg rclone wget unzip
+
+echo "=== Configuring rclone ==="
+mkdir -p ~/.config/rclone
+echo "$RCLONE_CONFIG_B64" | base64 -d > ~/.config/rclone/rclone.conf
+
+echo "=== Installing Real-ESRGAN ==="
+wget -q https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-ubuntu.zip -O /tmp/realesrgan.zip
+unzip -q /tmp/realesrgan.zip -d /tmp/realesrgan
+mv /tmp/realesrgan/realesrgan-ncnn-vulkan /usr/local/bin/
+chmod +x /usr/local/bin/realesrgan-ncnn-vulkan
+
+echo "=== Installing FrameWright ==="
+pip install git+https://github.com/KingOfTheAce2/video-restoration-pipeline-framewright.git yt-dlp
+
+echo "=== Downloading input from Google Drive ==="
+rclone copy "{config.input_path}" /workspace/input.mp4 --progress
+
+echo "=== Starting restoration ==="
+{restore_cmd}
+
+echo "=== Uploading result to Google Drive ==="
+rclone copy /workspace/output.{output_ext} "{config.output_path}" --progress
+
+echo "=== Done! Shutting down instance ==="
+# Auto-destroy to avoid idle billing
+vastai destroy instance $VAST_CONTAINERLABEL || true
+"""
 
             # Create instance from offer
             create_data = {
@@ -349,18 +447,8 @@ class VastAIProvider(CloudProvider):
                 "image": self._docker_image,
                 "env": env_vars,
                 "disk": 100,
-                "runtype": "ssh",  # SSH for monitoring, could also use jupyter
-                "onstart": (
-                    "#!/bin/bash\n"
-                    "cd /workspace && "
-                    "pip install framewright && "
-                    f"framewright restore "
-                    f"--input {config.input_path} "
-                    f"--output {config.output_path} "
-                    f"--scale {config.scale_factor} "
-                    f"--model {config.model_name} "
-                    f"--quality {config.crf}"
-                ),
+                "runtype": "ssh",
+                "onstart": onstart_script,
             }
 
             response = self._make_request(
@@ -380,12 +468,29 @@ class VastAIProvider(CloudProvider):
                 config=config,
             )
 
+            # Return job_id with instance_id accessible
+            self._last_instance_id = instance_id
             return job_id
 
         except Exception as e:
             if isinstance(e, JobSubmissionError):
                 raise
             raise JobSubmissionError(f"Failed to submit Vast.ai job: {e}")
+
+    def get_instance_id(self, job_id: str) -> Optional[str]:
+        """Get the Vast.ai instance ID for a job."""
+        if job_id in self._jobs:
+            return self._jobs[job_id].instance_id
+        return getattr(self, '_last_instance_id', None)
+
+    def register_job(self, job_id: str, instance_id: str, config: Optional[ProcessingConfig] = None):
+        """Register a job from saved data."""
+        self._jobs[job_id] = VastAIInstanceInfo(
+            job_id=job_id,
+            instance_id=instance_id,
+            offer_id="",
+            config=config,
+        )
 
     def get_job_status(self, job_id: str) -> JobStatus:
         """Get the current status of a job.
