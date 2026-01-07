@@ -428,13 +428,13 @@ echo "=== Installing FrameWright ==="
 pip install git+https://github.com/KingOfTheAce2/video-restoration-pipeline-framewright.git yt-dlp
 
 echo "=== Downloading input from Google Drive ==="
-rclone copy "{config.input_path}" /workspace/input.mp4 --progress
+rclone copyto "{config.input_path}" /workspace/input.mp4 --progress
 
 echo "=== Starting restoration ==="
 {restore_cmd}
 
 echo "=== Uploading result to Google Drive ==="
-rclone copy /workspace/output.{output_ext} "{config.output_path}" --progress
+rclone copyto /workspace/output.{output_ext} "{config.output_path}" --progress
 
 echo "=== Done! Shutting down instance ==="
 # Auto-destroy to avoid idle billing
