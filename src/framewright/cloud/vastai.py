@@ -360,29 +360,17 @@ class VastAIProvider(CloudProvider):
             # Build restoration command with all options
             output_ext = config.output_format or "mkv"
 
-            # Determine output mode based on frame options
-            if config.frames_only or config.save_frames:
-                # Use output-dir mode to preserve frames
-                restore_cmd = (
-                    f"framewright restore "
-                    f"--input /workspace/input.mp4 "
-                    f"--output-dir /workspace/project "
-                    f"--format {output_ext} "
-                    f"--scale {config.scale_factor} "
-                    f"--model {config.model_name} "
-                    f"--quality {config.crf}"
-                )
-            else:
-                # Standard mode - output video directly
-                restore_cmd = (
-                    f"framewright restore "
-                    f"--input /workspace/input.mp4 "
-                    f"--output /workspace/output.{output_ext} "
-                    f"--format {output_ext} "
-                    f"--scale {config.scale_factor} "
-                    f"--model {config.model_name} "
-                    f"--quality {config.crf}"
-                )
+            # Always use output-dir mode for cloud jobs to preserve frames
+            # This allows recovery if the job fails partway through
+            restore_cmd = (
+                f"framewright restore "
+                f"--input /workspace/input.mp4 "
+                f"--output-dir /workspace/project "
+                f"--format {output_ext} "
+                f"--scale {config.scale_factor} "
+                f"--model {config.model_name} "
+                f"--quality {config.crf}"
+            )
             # Frame interpolation
             if config.enable_interpolation:
                 restore_cmd += f" --enable-rife --rife-model {config.rife_model}"
@@ -428,54 +416,66 @@ class VastAIProvider(CloudProvider):
             # e.g., "gdrive:framewright/output/video.mp4" -> "gdrive:framewright/output/video_frames/"
             output_base = config.output_path.rsplit(".", 1)[0] if "." in config.output_path else config.output_path
             frames_output_path = f"{output_base}_frames/"
+            unique_frames_path = f"{output_base}_unique_frames/"
 
-            # Build upload commands based on mode
-            if config.frames_only:
-                # Only upload frames (unique frames if dedup enabled)
-                upload_section = f'''
-echo "=== Uploading enhanced frames to Google Drive ==="
-# Find frames directory (enhanced or frames)
-if [ -d "/workspace/project/enhanced" ]; then
-    FRAMES_DIR="/workspace/project/enhanced"
-elif [ -d "/workspace/project/frames" ]; then
-    FRAMES_DIR="/workspace/project/frames"
-else
-    FRAMES_DIR="/workspace/project"
-fi
-echo "Uploading frames from $FRAMES_DIR"
-rclone copy "$FRAMES_DIR" "{frames_output_path}" --progress
-echo "Frames uploaded to: {frames_output_path}"
+            # Background sync function to periodically upload frames during processing
+            # This ensures progress is saved even if the job fails
+            background_sync = f'''
+# Start background frame sync (uploads every 2 minutes)
+sync_frames_to_gdrive() {{
+    while true; do
+        sleep 120
+        if [ -d "/workspace/project/enhanced" ]; then
+            echo "[Background Sync] Uploading enhanced frames..."
+            rclone copy "/workspace/project/enhanced" "{frames_output_path}" --quiet
+        elif [ -d "/workspace/project/unique_frames" ]; then
+            echo "[Background Sync] Uploading unique frames..."
+            rclone copy "/workspace/project/unique_frames" "{unique_frames_path}" --quiet
+        fi
+    done
+}}
+# Run sync in background (will be killed when script exits)
+sync_frames_to_gdrive &
+SYNC_PID=$!
+trap "kill $SYNC_PID 2>/dev/null" EXIT
 '''
-            elif config.save_frames:
-                # Upload both video AND frames
+
+            # Build upload commands - always upload frames for cloud jobs
+            if config.frames_only:
+                # Only upload frames (skip video assembly)
                 upload_section = f'''
 echo "=== Uploading enhanced frames to Google Drive ==="
 if [ -d "/workspace/project/enhanced" ]; then
     FRAMES_DIR="/workspace/project/enhanced"
-elif [ -d "/workspace/project/frames" ]; then
-    FRAMES_DIR="/workspace/project/frames"
-else
-    FRAMES_DIR="/workspace/project"
+    rclone copy "$FRAMES_DIR" "{frames_output_path}" --progress
+    echo "Enhanced frames uploaded to: {frames_output_path}"
 fi
-echo "Uploading frames from $FRAMES_DIR"
-rclone copy "$FRAMES_DIR" "{frames_output_path}" --progress
-echo "Frames uploaded to: {frames_output_path}"
+if [ -d "/workspace/project/unique_frames" ]; then
+    rclone copy "/workspace/project/unique_frames" "{unique_frames_path}" --progress
+    echo "Unique frames uploaded to: {unique_frames_path}"
+fi
+'''
+            else:
+                # Upload video AND frames (frames are backup in case of issues)
+                upload_section = f'''
+echo "=== Uploading frames to Google Drive (backup) ==="
+if [ -d "/workspace/project/enhanced" ]; then
+    rclone copy "/workspace/project/enhanced" "{frames_output_path}" --progress
+    echo "Enhanced frames uploaded to: {frames_output_path}"
+fi
+if [ -d "/workspace/project/unique_frames" ]; then
+    rclone copy "/workspace/project/unique_frames" "{unique_frames_path}" --progress
+    echo "Unique frames uploaded to: {unique_frames_path}"
+fi
 
 echo "=== Uploading video to Google Drive ==="
-# Find the output video in project dir
 VIDEO_FILE=$(find /workspace/project -maxdepth 1 -name "*.{output_ext}" | head -1)
 if [ -n "$VIDEO_FILE" ]; then
     rclone copyto "$VIDEO_FILE" "{config.output_path}" --progress
     echo "Video uploaded to: {config.output_path}"
 else
-    echo "Warning: No video file found to upload"
+    echo "Warning: No video file found, but frames were uploaded"
 fi
-'''
-            else:
-                # Standard mode - just upload video
-                upload_section = f'''
-echo "=== Uploading result to Google Drive ==="
-rclone copyto /workspace/output.{output_ext} "{config.output_path}" --progress
 '''
 
             # Create startup script
@@ -505,8 +505,14 @@ export FRAMEWRIGHT_BACKEND=pytorch
 echo "=== Downloading input from Google Drive ==="
 rclone copyto "{config.input_path}" /workspace/input.mp4 --progress
 
+{background_sync}
+
 echo "=== Starting restoration ==="
 {restore_cmd}
+
+# Kill background sync before final upload
+kill $SYNC_PID 2>/dev/null || true
+
 {upload_section}
 echo "=== Done! Shutting down instance ==="
 # Auto-destroy to avoid idle billing
