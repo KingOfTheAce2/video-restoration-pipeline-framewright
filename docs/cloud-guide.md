@@ -8,7 +8,7 @@ Quick reference for cloud GPU processing on Vast.ai.
 
 ```bash
 framewright cloud submit \
-    --input "gdrive:framewright/input/Moscow_clad_in_snow_1909.mp4" \
+    --input "gdrive:framewright/input/video.mp4" \
     --output-dir "gdrive:framewright/output/" \
     --scale 4 \
     --gpu RTX_4090
@@ -256,26 +256,81 @@ Formats: `mkv`, `mp4`, `webm`, `avi`, `mov`
 
 ---
 
-## Other Cloud Commands
+## Monitoring & Management
+
+### Check Job Status
+```bash
+framewright cloud status fw_46cd66213217
+```
+Returns: job state, progress %, instance info, elapsed time
+
+### List All Jobs
+```bash
+framewright cloud jobs
+```
+Shows all submitted jobs with their IDs and states
+
+### Download Completed Result
+```bash
+framewright cloud download fw_46cd66213217
+framewright cloud download fw_46cd66213217 --output ./my_restored_video.mp4
+```
+
+### Cancel Running Job
+```bash
+framewright cloud cancel fw_46cd66213217
+```
+Stops processing and destroys the instance (stops billing)
 
 ### Check GPU Prices
 ```bash
 framewright cloud gpus
 ```
 
-### Check Balance
+### Check Vast.ai Balance
 ```bash
 framewright cloud balance
 ```
 
-### List Jobs
-```bash
-framewright cloud status
-```
+---
 
-### Cancel Job
-```bash
-framewright cloud cancel <job_id>
+## Job States
+
+| State | Meaning |
+|-------|---------|
+| `pending` | Waiting for instance to start |
+| `starting` | Instance booting, installing dependencies |
+| `running` | Processing video |
+| `uploading` | Uploading result to Google Drive |
+| `completed` | Done - download available |
+| `failed` | Error occurred |
+| `cancelled` | Manually cancelled |
+
+---
+
+## Vast.ai Dashboard Monitoring
+
+For detailed logs, go to [cloud.vast.ai/instances](https://cloud.vast.ai/instances/):
+
+1. Find your instance (matches job submission time)
+2. Click **"Logs"** button to see real-time output
+3. Watch for:
+   - `=== Downloading input ===` - rclone pulling from GDrive
+   - `=== Starting restoration ===` - framewright running
+   - `=== Uploading result ===` - sending back to GDrive
+   - Any red error messages
+
+### What Good Progress Looks Like
+```
+=== Installing dependencies ===
+=== Configuring rclone ===
+=== Installing Real-ESRGAN ===
+=== Installing FrameWright ===
+=== Downloading input from Google Drive ===
+Transferred: 26.450M / 26.450 MBytes, 100%
+=== Starting restoration ===
+[1/4] Extracting frames... 100%
+[2/4] Enhancing frames... 45%    <-- This takes longest
 ```
 
 ---
@@ -307,11 +362,38 @@ Fixed in latest version. Update with:
 pip install --upgrade git+https://github.com/KingOfTheAce2/video-restoration-pipeline-framewright.git
 ```
 
-### Job stuck or failed
-Check logs on Vast.ai dashboard, then destroy instance manually to stop billing.
+### Instance stuck on "starting" (>5 min)
+GPU might be unavailable. Cancel and retry:
+```bash
+framewright cloud cancel fw_xxxxx
+framewright cloud submit ...  # try again
+```
+
+### Job failed without output
+1. Check Vast.ai logs for error message
+2. Destroy instance manually to stop billing
+3. Common causes: out of disk, GPU memory, network timeout
 
 ### Out of disk space
-Default is 100GB. For very long videos, use smaller `--scale 2`.
+Default is 100GB. For very long videos, use `--scale 2` instead of 4.
+
+### Timeout reached (job killed)
+Default 120 min may not be enough. Use longer timeout:
+```bash
+--timeout 180   # 3 hours
+--timeout 240   # 4 hours
+```
+
+### Manual Instance Cleanup
+If something goes wrong, destroy the instance on Vast.ai to stop charges:
+1. Go to https://cloud.vast.ai/instances/
+2. Find the instance
+3. Click **"Destroy"**
+
+Or via vastai CLI:
+```bash
+vastai destroy instance <instance_id>
+```
 
 ---
 
