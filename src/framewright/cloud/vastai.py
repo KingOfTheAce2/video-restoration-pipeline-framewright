@@ -487,18 +487,32 @@ echo "=== Installing dependencies ==="
 apt-get update && apt-get install -y rclone wget unzip xz-utils
 
 echo "=== Installing FFmpeg with full codec support ==="
-# The default Ubuntu FFmpeg lacks libx265 support which is required for video reassembly
-# Install the static build with full codec support from johnvansickle.com
+# The conda FFmpeg (v4.3) lacks libx265 support - replace it with static build
+# First, remove/rename conda's ffmpeg to prevent PATH conflicts
+if [ -f /opt/conda/bin/ffmpeg ]; then
+    mv /opt/conda/bin/ffmpeg /opt/conda/bin/ffmpeg.bak 2>/dev/null || true
+    mv /opt/conda/bin/ffprobe /opt/conda/bin/ffprobe.bak 2>/dev/null || true
+    echo "Renamed conda FFmpeg to prevent conflicts"
+fi
+
+# Install static build with full codec support (libx264, libx265, etc.)
 cd /tmp
 wget -q https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
 tar xf ffmpeg-release-amd64-static.tar.xz
 cp ffmpeg-*-amd64-static/ffmpeg /usr/local/bin/
 cp ffmpeg-*-amd64-static/ffprobe /usr/local/bin/
+chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
 rm -rf ffmpeg-*
 cd /workspace
 
-# Verify FFmpeg has libx265 support
+# Ensure /usr/local/bin is first in PATH
+export PATH="/usr/local/bin:$PATH"
+
+# Verify FFmpeg version and codec support
+echo "FFmpeg location: $(which ffmpeg)"
+ffmpeg -version | head -1
 ffmpeg -encoders 2>/dev/null | grep -q libx265 && echo "✓ FFmpeg libx265 support verified" || echo "⚠ libx265 not found"
+ffmpeg -encoders 2>/dev/null | grep -q libx264 && echo "✓ FFmpeg libx264 support verified" || echo "⚠ libx264 not found"
 
 echo "=== Configuring rclone ==="
 mkdir -p ~/.config/rclone
@@ -509,10 +523,14 @@ echo "=== Installing Real-ESRGAN (PyTorch/CUDA) ==="
 # PyTorch 2.1.0 was compiled with NumPy 1.x and crashes with NumPy 2.x
 pip install "numpy<2.0"
 
-# Use PyTorch Real-ESRGAN which works with CUDA (already in PyTorch Docker)
-# This avoids Vulkan issues that occur in Docker containers
-pip install --no-deps realesrgan
-pip install basicsr gfpgan facexlib
+# Install dependencies FIRST, then realesrgan
+# Order matters: basicsr -> facexlib -> gfpgan -> realesrgan
+pip install basicsr
+pip install facexlib gfpgan
+pip install realesrgan
+
+# Verify Real-ESRGAN is installed
+python -c "import realesrgan; print('✓ Real-ESRGAN package installed')" || echo "⚠ Real-ESRGAN import failed"
 
 echo "=== Installing FrameWright ==="
 # imagehash is required for frame deduplication
@@ -520,6 +538,9 @@ pip install git+https://github.com/KingOfTheAce2/video-restoration-pipeline-fram
 
 # Force PyTorch backend (uses CUDA instead of Vulkan)
 export FRAMEWRIGHT_BACKEND=pytorch
+
+# Verify FrameWright can detect Real-ESRGAN
+python -c "from framewright.utils.dependencies import check_realesrgan; info = check_realesrgan(); print(f'Real-ESRGAN: {\"OK\" if info.installed else \"MISSING\"} ({info.additional_info.get(\"backend\", \"unknown\")} backend)')"
 
 echo "=== Downloading input from Google Drive ==="
 rclone copyto "{config.input_path}" /workspace/input.mp4 --progress
