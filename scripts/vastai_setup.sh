@@ -30,6 +30,12 @@ echo "=== Configuring rclone ==="
 mkdir -p ~/.config/rclone
 echo "$RCLONE_CONFIG_B64" | base64 -d > ~/.config/rclone/rclone.conf
 
+echo "=== Upgrading PyTorch for RTX 50-series (Blackwell) ==="
+# RTX 5090 requires PyTorch 2.5+ with CUDA 12.4+ (sm_120 compute capability)
+# The base image has PyTorch 2.1.0 which only supports up to sm_90
+pip install --upgrade torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+python -c "import torch; print(f'PyTorch {torch.__version__}, CUDA {torch.version.cuda}, Arch: {torch.cuda.get_arch_list()}')"
+
 echo "=== Installing Real-ESRGAN (PyTorch/CUDA) ==="
 pip install "numpy<2.0" basicsr facexlib gfpgan realesrgan
 
@@ -44,25 +50,48 @@ echo "=== Starting restoration ==="
 # RESTORE_CMD is passed as env var
 eval "$RESTORE_CMD"
 
-echo "=== Uploading results to Google Drive ==="
-# Upload frames
-if [ -d "/workspace/project/enhanced" ]; then
-    rclone copy "/workspace/project/enhanced" "$FRAMES_OUTPUT_PATH" --progress
-    echo "Enhanced frames uploaded to: $FRAMES_OUTPUT_PATH"
-fi
+echo "=== Uploading all intermediate results to Google Drive ==="
+# This allows recovery from any stage if something fails
+
+# 1. Upload deduplicated/unique frames (stage 1 output)
 if [ -d "/workspace/project/unique_frames" ]; then
+    echo "Uploading deduplicated frames..."
     rclone copy "/workspace/project/unique_frames" "$UNIQUE_FRAMES_PATH" --progress
+    echo "Deduplicated frames: $UNIQUE_FRAMES_PATH"
 fi
 
-# Upload video
+# 2. Upload enhanced frames (stage 2 output - after Real-ESRGAN)
+if [ -d "/workspace/project/enhanced" ]; then
+    echo "Uploading enhanced frames..."
+    rclone copy "/workspace/project/enhanced" "$FRAMES_OUTPUT_PATH" --progress
+    echo "Enhanced frames: $FRAMES_OUTPUT_PATH"
+fi
+
+# 3. Upload interpolated frames if RIFE was used (stage 3 output)
+if [ -d "/workspace/project/interpolated" ]; then
+    echo "Uploading interpolated frames..."
+    INTERP_PATH="${FRAMES_OUTPUT_PATH%/}_interpolated/"
+    rclone copy "/workspace/project/interpolated" "$INTERP_PATH" --progress
+    echo "Interpolated frames: $INTERP_PATH"
+fi
+
+# 4. Upload final video
 OUTPUT_EXT="${OUTPUT_PATH##*.}"
 VIDEO_FILE=$(find /workspace/project -maxdepth 1 -name "*.$OUTPUT_EXT" 2>/dev/null | head -1)
 if [ -n "$VIDEO_FILE" ]; then
+    echo "Uploading final video..."
     rclone copyto "$VIDEO_FILE" "$OUTPUT_PATH" --progress
-    echo "Video uploaded to: $OUTPUT_PATH"
+    echo "Final video: $OUTPUT_PATH"
 else
     echo "Warning: No video file found"
 fi
+
+echo ""
+echo "=== Output Summary ==="
+echo "Deduplicated frames: $UNIQUE_FRAMES_PATH"
+echo "Enhanced frames: $FRAMES_OUTPUT_PATH"
+[ -d "/workspace/project/interpolated" ] && echo "Interpolated frames: ${FRAMES_OUTPUT_PATH%/}_interpolated/"
+echo "Final video: $OUTPUT_PATH"
 
 echo "=== Saving logs ==="
 cp /var/log/onstart*.log /workspace/ 2>/dev/null || true
