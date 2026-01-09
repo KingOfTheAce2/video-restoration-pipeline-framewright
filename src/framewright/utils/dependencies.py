@@ -314,32 +314,36 @@ def check_realesrgan() -> DependencyInfo:
                 break
 
     # Check for PyTorch version (fallback backend)
+    # Must verify all required imports work, not just the package exists
     if not info.installed:
         try:
-            import importlib.util
-            if importlib.util.find_spec("realesrgan") is not None:
-                info.installed = True
-                info.command = "python -m realesrgan"
-                info.path = "realesrgan (Python package)"
-                info.additional_info["backend"] = "pytorch"
-                # Try to get version
+            import torch
+            from realesrgan import RealESRGANer
+            from basicsr.archs.rrdbnet_arch import RRDBNet
+
+            info.installed = True
+            info.command = "python -m realesrgan"
+            info.path = "realesrgan (Python package)"
+            info.additional_info["backend"] = "pytorch"
+            # Try to get version
+            try:
+                import realesrgan
+                info.version = getattr(realesrgan, "__version__", "unknown")
+            except Exception:
+                info.version = "installed"
+            # Check if CUDA is available
+            info.gpu_available = torch.cuda.is_available()
+            if info.gpu_available:
                 try:
-                    import realesrgan
-                    info.version = getattr(realesrgan, "__version__", "unknown")
+                    info.additional_info["cuda_device"] = torch.cuda.get_device_name(0)
                 except Exception:
-                    info.version = "installed"
-                # Check if CUDA is available
-                try:
-                    import torch
-                    info.gpu_available = torch.cuda.is_available()
-                    if info.gpu_available:
-                        info.additional_info["cuda_device"] = torch.cuda.get_device_name(0)
-                except Exception:
-                    info.gpu_available = False
-                logger.info("Found Real-ESRGAN PyTorch package")
-                return info
-        except Exception:
-            pass
+                    pass
+            logger.info("Found Real-ESRGAN PyTorch package (verified RealESRGANer and RRDBNet imports)")
+            return info
+        except ImportError as e:
+            logger.warning(f"Real-ESRGAN PyTorch package check failed: {e}")
+        except Exception as e:
+            logger.debug(f"Real-ESRGAN PyTorch check error: {e}")
 
     if not info.installed:
         info.error_message = (

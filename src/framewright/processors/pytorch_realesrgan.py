@@ -65,7 +65,8 @@ def is_pytorch_esrgan_available() -> bool:
         _PYTORCH_ESRGAN_AVAILABLE = True
         logger.info("PyTorch Real-ESRGAN is available")
     except ImportError as e:
-        logger.debug(f"PyTorch Real-ESRGAN not available: {e}")
+        logger.warning(f"PyTorch Real-ESRGAN not available: {e}")
+        logger.warning("Install with: pip install realesrgan basicsr")
         _PYTORCH_ESRGAN_AVAILABLE = False
 
     return _PYTORCH_ESRGAN_AVAILABLE
