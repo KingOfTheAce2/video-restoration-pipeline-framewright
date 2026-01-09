@@ -511,8 +511,8 @@ export PATH="/usr/local/bin:$PATH"
 # Verify FFmpeg version and codec support
 echo "FFmpeg location: $(which ffmpeg)"
 ffmpeg -version | head -1
-ffmpeg -encoders 2>/dev/null | grep -q libx265 && echo "✓ FFmpeg libx265 support verified" || echo "⚠ libx265 not found"
-ffmpeg -encoders 2>/dev/null | grep -q libx264 && echo "✓ FFmpeg libx264 support verified" || echo "⚠ libx264 not found"
+ffmpeg -encoders 2>/dev/null | grep -q libx265 && echo "[OK] FFmpeg libx265 support verified" || echo "[WARN] libx265 not found"
+ffmpeg -encoders 2>/dev/null | grep -q libx264 && echo "[OK] FFmpeg libx264 support verified" || echo "[WARN] libx264 not found"
 
 echo "=== Configuring rclone ==="
 mkdir -p ~/.config/rclone
@@ -530,7 +530,7 @@ pip install facexlib gfpgan
 pip install realesrgan
 
 # Verify Real-ESRGAN is installed
-python -c "import realesrgan; print('✓ Real-ESRGAN package installed')" || echo "⚠ Real-ESRGAN import failed"
+python -c "import realesrgan; print('[OK] Real-ESRGAN package installed')" || echo "[WARN] Real-ESRGAN import failed"
 
 echo "=== Installing FrameWright ==="
 # imagehash is required for frame deduplication
