@@ -7,7 +7,7 @@ set -e
 cd /workspace
 
 echo "=== Installing dependencies ==="
-apt-get update && apt-get install -y rclone wget unzip xz-utils curl
+apt-get update && apt-get install -y rclone wget unzip xz-utils curl libgl1-mesa-glx libglib2.0-0
 
 echo "=== Installing FFmpeg with full codec support ==="
 # Replace conda's FFmpeg (lacks libx265) with static build
