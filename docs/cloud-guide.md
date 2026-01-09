@@ -13,7 +13,7 @@ framewright cloud submit \
     --scale 4 \
     --model realesrgan-x4plus \
     --auto-enhance \
-    --gpu RTX_5090
+    --gpu RTX_4090
 ```
 
 ---
@@ -28,7 +28,7 @@ framewright cloud submit \
     --model realesrgan-x4plus \
     --auto-enhance \
     --quality 15 \
-    --gpu RTX_5090
+    --gpu RTX_4090
 ```
 
 ### Full Restoration (Old Film)
@@ -42,7 +42,7 @@ framewright cloud submit \
     --enable-rife \
     --target-fps 24 \
     --audio-enhance \
-    --gpu RTX_5090
+    --gpu RTX_4090
 ```
 
 ### B&W Archive (Keep Black & White)
@@ -63,7 +63,7 @@ framewright cloud submit \
     --scratch-sensitivity 0.5 \
     --grain-reduction 0.15 \
     --timeout 120 \
-    --gpu RTX_5090 \
+    --gpu RTX_4090 \
     --yes \
     --wait
 ```
@@ -86,7 +86,7 @@ framewright cloud submit \
     --grain-reduction 0.2 \
     --audio-enhance \
     --quality 15 \
-    --gpu RTX_5090
+    --gpu RTX_4090
 ```
 
 **Colorization Models:**
@@ -102,7 +102,7 @@ framewright cloud submit \
     --remove-watermark \
     --watermark-auto-detect \
     --remove-subtitles \
-    --gpu RTX_5090
+    --gpu RTX_4090
 ```
 
 ### YouTube Video Processing
@@ -112,7 +112,7 @@ framewright cloud submit \
     --scale 4 \
     --model realesrgan-x4plus \
     --auto-enhance \
-    --gpu RTX_5090
+    --gpu RTX_4090
 ```
 
 ### Wait for Result & Download
@@ -124,7 +124,7 @@ framewright cloud submit \
     --auto-enhance \
     --wait \
     --output-dir ./restored/ \
-    --gpu RTX_5090
+    --gpu RTX_4090
 ```
 
 ---
@@ -257,14 +257,15 @@ Formats: `mkv`, `mp4`, `webm`, `avi`, `mov`
 
 | GPU | Performance | Price/hr | Value Rating | Best For |
 |-----|-------------|----------|--------------|----------|
-| `RTX_5090` | Fastest | ~$0.50-0.80 | Excellent | Large projects, fastest turnaround |
-| `RTX_4090` | Very fast | ~$0.40-0.70 | Excellent | Best all-rounder, most available |
+| `RTX_4090` | Very fast | ~$0.40-0.70 | Excellent | **Recommended** - Best all-rounder |
 | `RTX_3090` | Fast | ~$0.25-0.45 | Great | Budget-conscious, good quality |
 | `RTX_4080` | Good | ~$0.30-0.50 | Good | Mid-tier option |
 | `RTX_3080` | Moderate | ~$0.20-0.35 | Good | Smaller videos, testing |
 | `A100` | Enterprise | ~$1.00+ | Specialized | Very large videos, batch work |
 
-**Recommended Choice:** `RTX_5090` or `RTX_4090` for best price-to-performance ratio.
+**Recommended Choice:** `RTX_4090` for best price-to-performance ratio.
+
+**Note:** RTX 5090 (Blackwell) is NOT yet supported by PyTorch.
 
 **Tips:**
 - RTX 5090/4090 have 24GB VRAM - handles 4K without issues

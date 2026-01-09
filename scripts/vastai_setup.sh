@@ -30,16 +30,18 @@ echo "=== Configuring rclone ==="
 mkdir -p ~/.config/rclone
 echo "$RCLONE_CONFIG_B64" | base64 -d > ~/.config/rclone/rclone.conf
 
-# Check GPU architecture - RTX 50-series (Blackwell/sm_120) needs PyTorch upgrade
+# Show PyTorch version (stock PyTorch 2.1.0 works with RTX 30xx/40xx)
+# NOTE: RTX 50-series (Blackwell/sm_120) is NOT yet supported by PyTorch
 GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
 echo "Detected GPU: $GPU_NAME"
-
-if echo "$GPU_NAME" | grep -qE "RTX 50[0-9]{2}|Blackwell"; then
-    echo "=== Upgrading PyTorch for RTX 50-series (Blackwell) ==="
-    # RTX 5090 requires PyTorch 2.5+ with CUDA 12.4+ (sm_120 compute capability)
-    pip install --upgrade torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
-fi
 python -c "import torch; print(f'PyTorch {torch.__version__}, CUDA {torch.version.cuda}')"
+
+# Check for unsupported GPU
+if echo "$GPU_NAME" | grep -qE "RTX 50[0-9]{2}|Blackwell"; then
+    echo "ERROR: RTX 50-series GPUs are not yet supported by PyTorch."
+    echo "Please use RTX 4090 or RTX 3090 instead."
+    exit 1
+fi
 
 echo "=== Installing Real-ESRGAN (PyTorch/CUDA) ==="
 pip install "numpy<2.0" basicsr facexlib gfpgan realesrgan

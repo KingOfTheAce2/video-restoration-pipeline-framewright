@@ -357,11 +357,18 @@ class VastAIProvider(CloudProvider):
         min_vram = 16 if config.scale_factor == 2 else 24
 
         # GPU fallback order: requested GPU first, then alternatives
+        # NOTE: RTX 5090 (Blackwell/sm_120) is NOT supported by PyTorch yet
         import time
+
+        # Warn if user requested RTX 5090
+        if config.gpu_type == "RTX_5090":
+            print("  Warning: RTX 5090 is not yet supported by PyTorch. Using RTX 4090 instead.")
+            config.gpu_type = "RTX_4090"
+
         gpu_fallback_order = [config.gpu_type]
 
-        # Add fallback GPUs if not already the requested type
-        fallback_gpus = ["RTX_5090", "RTX_4090", "RTX_3090", "RTX_4080", "RTX_3080"]
+        # Add fallback GPUs if not already the requested type (skip RTX 5090)
+        fallback_gpus = ["RTX_4090", "RTX_3090", "RTX_4080", "RTX_3080"]
         for gpu in fallback_gpus:
             if gpu != config.gpu_type and gpu not in gpu_fallback_order:
                 gpu_fallback_order.append(gpu)
@@ -533,7 +540,10 @@ class VastAIProvider(CloudProvider):
 
             # Minimal onstart script - downloads and runs the setup script from GitHub
             # This avoids JSON encoding issues with large scripts containing special chars
-            setup_script_url = "https://raw.githubusercontent.com/KingOfTheAce2/video-restoration-pipeline-framewright/main/scripts/vastai_setup.sh"
+            # Add timestamp to bust GitHub raw content cache
+            import time
+            cache_bust = int(time.time())
+            setup_script_url = f"https://raw.githubusercontent.com/KingOfTheAce2/video-restoration-pipeline-framewright/main/scripts/vastai_setup.sh?v={cache_bust}"
             onstart_script = f'#!/bin/bash\ncurl -sL "{setup_script_url}" | bash'
 
             # Create instance from offer
