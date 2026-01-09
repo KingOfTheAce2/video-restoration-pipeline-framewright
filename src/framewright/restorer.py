@@ -1334,8 +1334,7 @@ class VideoRestorer:
         success, error = enhance_frame_pytorch(input_path, output_path, config)
 
         if success:
-            # Validate output
-            from .utils.frame_validation import validate_frame_integrity
+            # Validate output (validate_frame_integrity imported from .validators at top)
             validation = validate_frame_integrity(output_path)
             if not validation.is_valid:
                 return output_path, False, validation.error_message
