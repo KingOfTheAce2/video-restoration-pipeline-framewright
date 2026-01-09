@@ -540,7 +540,7 @@ pip install git+https://github.com/KingOfTheAce2/video-restoration-pipeline-fram
 export FRAMEWRIGHT_BACKEND=pytorch
 
 # Verify FrameWright can detect Real-ESRGAN
-python -c "from framewright.utils.dependencies import check_realesrgan; info = check_realesrgan(); print(f'Real-ESRGAN: {\"OK\" if info.installed else \"MISSING\"} ({info.additional_info.get(\"backend\", \"unknown\")} backend)')"
+python -c 'from framewright.utils.dependencies import check_realesrgan; info = check_realesrgan(); print("Real-ESRGAN:", "OK" if info.installed else "MISSING", "(" + info.additional_info.get("backend", "unknown") + " backend)")'
 
 echo "=== Downloading input from Google Drive ==="
 rclone copyto "{config.input_path}" /workspace/input.mp4 --progress
