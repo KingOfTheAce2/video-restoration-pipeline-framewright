@@ -263,10 +263,9 @@ def check_ffprobe() -> DependencyInfo:
 def check_realesrgan() -> DependencyInfo:
     """Check Real-ESRGAN installation.
 
-    Searches for realesrgan-ncnn-vulkan in:
-    1. System PATH
-    2. ~/.framewright/bin/ (custom install location)
-    3. Project bin/ directory
+    Searches for:
+    1. realesrgan-ncnn-vulkan binary in PATH or custom locations
+    2. PyTorch realesrgan Python package (fallback)
 
     Returns:
         DependencyInfo for Real-ESRGAN
@@ -294,6 +293,7 @@ def check_realesrgan() -> DependencyInfo:
             info.path = path
             info.command = cmd
             info.installed = True
+            info.additional_info["backend"] = "ncnn"
             break
 
     # If not in PATH, check common installation directories
@@ -309,16 +309,46 @@ def check_realesrgan() -> DependencyInfo:
                 info.command = str(search_path)
                 info.installed = True
                 info.additional_info["install_location"] = "framewright"
+                info.additional_info["backend"] = "ncnn"
                 logger.info(f"Found Real-ESRGAN at: {search_path}")
                 break
 
+    # Check for PyTorch version (fallback backend)
+    if not info.installed:
+        try:
+            import importlib.util
+            if importlib.util.find_spec("realesrgan") is not None:
+                info.installed = True
+                info.command = "python -m realesrgan"
+                info.path = "realesrgan (Python package)"
+                info.additional_info["backend"] = "pytorch"
+                # Try to get version
+                try:
+                    import realesrgan
+                    info.version = getattr(realesrgan, "__version__", "unknown")
+                except Exception:
+                    info.version = "installed"
+                # Check if CUDA is available
+                try:
+                    import torch
+                    info.gpu_available = torch.cuda.is_available()
+                    if info.gpu_available:
+                        info.additional_info["cuda_device"] = torch.cuda.get_device_name(0)
+                except Exception:
+                    info.gpu_available = False
+                logger.info("Found Real-ESRGAN PyTorch package")
+                return info
+        except Exception:
+            pass
+
     if not info.installed:
         info.error_message = (
-            "Real-ESRGAN binary not found. Install with: "
-            "python -c \"from framewright.processors.ncnn_vulkan import install_ncnn_vulkan; install_ncnn_vulkan()\""
+            "Real-ESRGAN not found. Install with: pip install realesrgan basicsr "
+            "OR download ncnn-vulkan binary from https://github.com/xinntao/Real-ESRGAN/releases"
         )
         return info
 
+    # For ncnn binary, try to get version info
     try:
         result = subprocess.run(
             [info.command, "-h"],

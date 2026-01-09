@@ -491,9 +491,14 @@ mkdir -p ~/.config/rclone
 echo "$RCLONE_CONFIG_B64" | base64 -d > ~/.config/rclone/rclone.conf
 
 echo "=== Installing Real-ESRGAN (PyTorch/CUDA) ==="
+# CRITICAL: Pin NumPy < 2.0 to avoid PyTorch 2.1.0 incompatibility
+# PyTorch 2.1.0 was compiled with NumPy 1.x and crashes with NumPy 2.x
+pip install "numpy<2.0"
+
 # Use PyTorch Real-ESRGAN which works with CUDA (already in PyTorch Docker)
 # This avoids Vulkan issues that occur in Docker containers
-pip install realesrgan basicsr
+pip install --no-deps realesrgan
+pip install basicsr gfpgan facexlib
 
 echo "=== Installing FrameWright ==="
 # imagehash is required for frame deduplication
