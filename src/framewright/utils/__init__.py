@@ -13,6 +13,8 @@ from .ffmpeg import (
     get_video_fps,
     get_video_duration,
     get_video_resolution,
+    get_available_encoders,
+    get_best_video_codec,
 )
 
 from .gpu import (
@@ -168,6 +170,8 @@ __all__ = [
     'get_video_fps',
     'get_video_duration',
     'get_video_resolution',
+    'get_available_encoders',
+    'get_best_video_codec',
     # GPU utilities
     'get_gpu_memory_info',
     'get_all_gpu_info',

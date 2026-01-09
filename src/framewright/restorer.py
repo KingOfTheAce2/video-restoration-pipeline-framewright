@@ -216,6 +216,7 @@ from .utils.disk import (
     DiskSpaceMonitor,
 )
 from .utils.dependencies import validate_all_dependencies
+from .utils.ffmpeg import get_best_video_codec
 from .processors.interpolation import FrameInterpolator, InterpolationError
 from .processors.analyzer import FrameAnalyzer, VideoAnalysis
 from .processors.adaptive_enhance import AdaptiveEnhancer, AdaptiveEnhanceResult
@@ -2207,12 +2208,15 @@ class VideoRestorer:
                 '-c:a', 'flac',  # FLAC audio codec
             ])
 
-        # Video encoding settings
+        # Video encoding settings - use best available codec with fallback
+        codec, pix_fmt = get_best_video_codec('libx265')
+        logger.info(f"Using video codec: {codec} with pixel format: {pix_fmt}")
+
         cmd.extend([
-            '-c:v', 'libx265',  # x265 codec
+            '-c:v', codec,
             '-crf', str(self.config.crf),  # Quality
             '-preset', self.config.preset,  # Encoding preset
-            '-pix_fmt', 'yuv420p10le',  # 10-bit color
+            '-pix_fmt', pix_fmt,
             '-y',  # Overwrite output
             str(output_path)
         ])

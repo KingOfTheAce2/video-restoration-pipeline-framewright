@@ -44,6 +44,78 @@ def check_ffmpeg_installed() -> bool:
     return True
 
 
+# Cache for available encoders
+_available_encoders: Optional[set] = None
+
+
+def get_available_encoders() -> set:
+    """
+    Get the set of available FFmpeg video encoders.
+
+    Returns:
+        Set of encoder names (e.g., {'libx264', 'libx265', 'libvpx'})
+    """
+    global _available_encoders
+    if _available_encoders is not None:
+        return _available_encoders
+
+    try:
+        result = subprocess.run(
+            ['ffmpeg', '-encoders'],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        # Parse encoder list - each line starts with flags then encoder name
+        encoders = set()
+        for line in result.stdout.split('\n'):
+            parts = line.strip().split()
+            if len(parts) >= 2 and parts[0].startswith('V'):  # Video encoders start with V
+                encoders.add(parts[1])
+        _available_encoders = encoders
+        return encoders
+    except Exception:
+        return set()
+
+
+def get_best_video_codec(preferred: str = 'libx265') -> Tuple[str, str]:
+    """
+    Get the best available video codec with fallback options.
+
+    This function checks if the preferred codec is available and falls back
+    to alternatives if not. This is particularly important for cloud environments
+    where FFmpeg may be compiled without certain codecs.
+
+    Args:
+        preferred: Preferred codec (default: libx265 for high quality archival)
+
+    Returns:
+        Tuple of (codec_name, pixel_format) for use with FFmpeg
+    """
+    encoders = get_available_encoders()
+
+    # Codec priority with their optimal pixel formats
+    codec_options = [
+        ('libx265', 'yuv420p10le'),  # Best quality, 10-bit
+        ('libx264', 'yuv420p'),       # Widely available
+        ('libvpx-vp9', 'yuv420p'),    # WebM format
+        ('mpeg4', 'yuv420p'),         # Last resort
+    ]
+
+    # If preferred codec is available, use it
+    for codec, pix_fmt in codec_options:
+        if codec == preferred and codec in encoders:
+            return (codec, pix_fmt)
+
+    # Otherwise, find best available
+    for codec, pix_fmt in codec_options:
+        if codec in encoders:
+            return (codec, pix_fmt)
+
+    # Fallback to libx264 even if not detected (usually available)
+    return ('libx264', 'yuv420p')
+
+
 def get_video_info(video_path: Path) -> Dict[str, Any]:
     """
     Get detailed video information using ffprobe.
@@ -447,11 +519,14 @@ def reassemble_from_frames(
             '-b:a', '192k',
         ])
 
+    # Use best available codec with automatic fallback
+    codec, pix_fmt = get_best_video_codec('libx265')
+
     cmd.extend([
-        '-c:v', 'libx265',
+        '-c:v', codec,
         '-crf', str(crf),
         '-preset', preset,
-        '-pix_fmt', 'yuv420p10le',
+        '-pix_fmt', pix_fmt,
         '-y',
         str(output_path)
     ])
@@ -459,6 +534,20 @@ def reassemble_from_frames(
     try:
         subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=7200)
     except subprocess.CalledProcessError as e:
+        # If codec fails, try fallback to libx264
+        if 'libx265' in codec or 'Unknown encoder' in str(e.stderr):
+            cmd_fallback = cmd.copy()
+            # Replace codec in command
+            for i, arg in enumerate(cmd_fallback):
+                if arg == codec:
+                    cmd_fallback[i] = 'libx264'
+                elif arg == pix_fmt:
+                    cmd_fallback[i] = 'yuv420p'
+            try:
+                subprocess.run(cmd_fallback, capture_output=True, text=True, check=True, timeout=7200)
+                return  # Success with fallback
+            except subprocess.CalledProcessError:
+                pass  # Fall through to original error
         raise FFmpegError(f"Failed to reassemble video: {e.stderr}")
     except subprocess.TimeoutExpired:
         raise FFmpegError("Video reassembly timed out (2 hour limit)")

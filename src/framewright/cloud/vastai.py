@@ -484,7 +484,21 @@ set -e
 cd /workspace
 
 echo "=== Installing dependencies ==="
-apt-get update && apt-get install -y ffmpeg rclone wget unzip
+apt-get update && apt-get install -y rclone wget unzip xz-utils
+
+echo "=== Installing FFmpeg with full codec support ==="
+# The default Ubuntu FFmpeg lacks libx265 support which is required for video reassembly
+# Install the static build with full codec support from johnvansickle.com
+cd /tmp
+wget -q https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
+tar xf ffmpeg-release-amd64-static.tar.xz
+cp ffmpeg-*-amd64-static/ffmpeg /usr/local/bin/
+cp ffmpeg-*-amd64-static/ffprobe /usr/local/bin/
+rm -rf ffmpeg-*
+cd /workspace
+
+# Verify FFmpeg has libx265 support
+ffmpeg -encoders 2>/dev/null | grep -q libx265 && echo "✓ FFmpeg libx265 support verified" || echo "⚠ libx265 not found"
 
 echo "=== Configuring rclone ==="
 mkdir -p ~/.config/rclone
