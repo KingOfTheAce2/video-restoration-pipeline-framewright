@@ -379,13 +379,27 @@ class VideoRestorer:
                 "GPU detected but not accessible. Check drivers and permissions."
             )
 
-        # Check for ncnn-vulkan (required for GPU processing)
-        if not is_ncnn_vulkan_available():
-            raise GPURequiredError(
-                f"GPU found ({best_gpu.name}) but realesrgan-ncnn-vulkan not installed. "
-                "This is required for GPU acceleration. Install with:\n"
-                "  python -c \"from framewright.processors.ncnn_vulkan import install_ncnn_vulkan; install_ncnn_vulkan()\""
-            )
+        # Check backend preference - PyTorch doesn't need ncnn-vulkan
+        env_backend = os.environ.get("FRAMEWRIGHT_BACKEND", "").lower()
+        using_pytorch = (env_backend == "pytorch" and is_pytorch_esrgan_available())
+
+        # Only require ncnn-vulkan if not using PyTorch backend
+        if not using_pytorch and not is_ncnn_vulkan_available():
+            # Check if PyTorch is available as fallback
+            if is_pytorch_esrgan_available():
+                logger.info(
+                    f"ncnn-vulkan not installed, but PyTorch Real-ESRGAN is available. "
+                    "Using PyTorch backend for GPU acceleration."
+                )
+                os.environ["FRAMEWRIGHT_BACKEND"] = "pytorch"
+                using_pytorch = True
+            else:
+                raise GPURequiredError(
+                    f"GPU found ({best_gpu.name}) but no Real-ESRGAN backend available. "
+                    "Install either:\n"
+                    "  1. PyTorch backend: pip install realesrgan\n"
+                    "  2. ncnn-vulkan: python -c \"from framewright.processors.ncnn_vulkan import install_ncnn_vulkan; install_ncnn_vulkan()\""
+                )
 
         # Check for minimum VRAM
         min_vram_mb = 1024  # Minimum 1GB VRAM for basic processing
@@ -396,12 +410,12 @@ class VideoRestorer:
                 "Consider using a GPU with more VRAM or set require_gpu=False."
             )
 
-        # Check for Vulkan support (required by ncnn-vulkan)
-        if not best_gpu.vulkan_supported:
+        # Only check Vulkan support if using ncnn-vulkan backend
+        if not using_pytorch and not best_gpu.vulkan_supported:
             raise GPURequiredError(
                 f"GPU {best_gpu.name} does not support Vulkan. "
-                "Vulkan is required for ncnn-vulkan acceleration. "
-                "Install Vulkan drivers or use a Vulkan-capable GPU."
+                "Either install Vulkan drivers or use PyTorch backend:\n"
+                "  export FRAMEWRIGHT_BACKEND=pytorch"
             )
 
         logger.info(

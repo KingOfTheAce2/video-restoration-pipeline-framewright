@@ -11,7 +11,9 @@ framewright cloud submit \
     --input "gdrive:framewright/input/video.mp4" \
     --output-dir "gdrive:framewright/output/" \
     --scale 4 \
-    --gpu RTX_4090
+    --model realesrgan-x4plus \
+    --auto-enhance \
+    --gpu RTX_5090
 ```
 
 ---
@@ -23,8 +25,10 @@ framewright cloud submit \
 framewright cloud submit \
     --gdrive-input "framewright/input/video.mp4" \
     --scale 4 \
+    --model realesrgan-x4plus \
+    --auto-enhance \
     --quality 15 \
-    --gpu RTX_4090
+    --gpu RTX_5090
 ```
 
 ### Full Restoration (Old Film)
@@ -32,20 +36,23 @@ framewright cloud submit \
 framewright cloud submit \
     --gdrive-input "framewright/input/old_film.mp4" \
     --scale 4 \
+    --model realesrgan-x4plus \
     --auto-enhance \
     --deduplicate \
     --enable-rife \
     --target-fps 24 \
     --audio-enhance \
-    --gpu RTX_4090
+    --gpu RTX_5090
 ```
 
 ### B&W Archive (Keep Black & White)
 Best for historical footage - maximum quality, keeps original B&W aesthetic.
 ```bash
 framewright cloud submit \
-    --gdrive-input "framewright/input/bw_footage.mp4" \
+    --gdrive-input "framewright/input/Moscow_clad_in_snow_1909.mp4" \
     --scale 4 \
+    --model realesrgan-x4plus \
+    --auto-enhance \
     --quality 15 \
     --format mp4 \
     --deduplicate \
@@ -56,29 +63,46 @@ framewright cloud submit \
     --scratch-sensitivity 0.5 \
     --grain-reduction 0.15 \
     --timeout 120 \
-    --gpu RTX_4090
+    --gpu RTX_5090 \
+    --yes \
+    --wait
 ```
 
-### Black & White to Color
+### Black & White to Color (Archive Quality)
+Best for converting historical B&W footage to color with full restoration.
 ```bash
 framewright cloud submit \
     --gdrive-input "framewright/input/bw_footage.mp4" \
     --scale 4 \
+    --model realesrgan-x4plus \
     --colorize \
     --colorize-model ddcolor \
     --auto-enhance \
-    --gpu RTX_4090
+    --deduplicate \
+    --dedup-threshold 0.98 \
+    --enable-rife \
+    --target-fps 24 \
+    --scratch-sensitivity 0.5 \
+    --grain-reduction 0.2 \
+    --audio-enhance \
+    --quality 15 \
+    --gpu RTX_5090
 ```
+
+**Colorization Models:**
+- `ddcolor` - More natural, realistic colors (recommended for archive)
+- `deoldify` - Artistic style, sometimes more vibrant
 
 ### Remove Watermark & Subtitles
 ```bash
 framewright cloud submit \
     --gdrive-input "framewright/input/watermarked.mp4" \
     --scale 2 \
+    --model realesrgan-x4plus \
     --remove-watermark \
     --watermark-auto-detect \
     --remove-subtitles \
-    --gpu RTX_4090
+    --gpu RTX_5090
 ```
 
 ### YouTube Video Processing
@@ -86,8 +110,9 @@ framewright cloud submit \
 framewright cloud submit \
     --url "https://www.youtube.com/watch?v=VIDEO_ID" \
     --scale 4 \
+    --model realesrgan-x4plus \
     --auto-enhance \
-    --gpu RTX_4090
+    --gpu RTX_5090
 ```
 
 ### Wait for Result & Download
@@ -95,8 +120,11 @@ framewright cloud submit \
 framewright cloud submit \
     --gdrive-input "framewright/input/video.mp4" \
     --scale 4 \
+    --model realesrgan-x4plus \
+    --auto-enhance \
     --wait \
-    --output-dir ./restored/
+    --output-dir ./restored/ \
+    --gpu RTX_5090
 ```
 
 ---
@@ -118,11 +146,20 @@ framewright cloud submit \
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--scale`, `-s` | Upscaling factor (2 or 4) | `4` |
-| `--model` | AI enhancement model | `realesrgan-x4plus` |
+| `--model` | AI enhancement model (see below) | `realesrgan-x4plus` |
 | `--quality`, `-q` | CRF quality (0-51, lower=better) | `15` |
 | `--auto-enhance` | Enable defect repair + face restore | off |
 | `--no-face-restore` | Disable face restoration | enabled |
 | `--no-defect-repair` | Disable scratch/dust repair | enabled |
+
+**AI Enhancement Models:**
+| Model | Best For | Notes |
+|-------|----------|-------|
+| `realesrgan-x4plus` | Real-world footage, archive | **Recommended** - natural results |
+| `realesrgan-x4plus-anime` | Anime/cartoon content | Optimized for animation |
+| `realesrnet-x4plus` | Faster processing | Slightly lower quality |
+
+**Always use `realesrgan-x4plus` for historical/archive footage** - the anime model can produce unnatural results on real-world video.
 
 **CRF Quality Guide:**
 - `0-12` = Visually lossless (huge files)
@@ -216,14 +253,24 @@ Formats: `mkv`, `mp4`, `webm`, `avi`, `mov`
 
 ---
 
-## GPU Recommendations
+## GPU Recommendations (Best Bang for Buck)
 
-| GPU | Best For | Price/hr |
-|-----|----------|----------|
-| `RTX_4090` | Fastest, best quality | ~$0.40-0.70 |
-| `RTX_3090` | Good balance | ~$0.25-0.45 |
-| `A100` | Large videos, pro work | ~$1.00+ |
-| `RTX_4080` | Budget option | ~$0.30-0.50 |
+| GPU | Performance | Price/hr | Value Rating | Best For |
+|-----|-------------|----------|--------------|----------|
+| `RTX_5090` | Fastest | ~$0.50-0.80 | Excellent | Large projects, fastest turnaround |
+| `RTX_4090` | Very fast | ~$0.40-0.70 | Excellent | Best all-rounder, most available |
+| `RTX_3090` | Fast | ~$0.25-0.45 | Great | Budget-conscious, good quality |
+| `RTX_4080` | Good | ~$0.30-0.50 | Good | Mid-tier option |
+| `RTX_3080` | Moderate | ~$0.20-0.35 | Good | Smaller videos, testing |
+| `A100` | Enterprise | ~$1.00+ | Specialized | Very large videos, batch work |
+
+**Recommended Choice:** `RTX_5090` or `RTX_4090` for best price-to-performance ratio.
+
+**Tips:**
+- RTX 5090/4090 have 24GB VRAM - handles 4K without issues
+- RTX 3090 also has 24GB VRAM - great budget alternative
+- Check `framewright cloud gpus` for current live pricing
+- Prices vary by region and demand
 
 ---
 
@@ -231,27 +278,32 @@ Formats: `mkv`, `mp4`, `webm`, `avi`, `mov`
 
 ### B&W Archive (Recommended for Historical)
 ```bash
---scale 4 --quality 15 --format mp4 --deduplicate --dedup-threshold 0.98 --enable-rife --target-fps 24 --audio-enhance --scratch-sensitivity 0.5 --grain-reduction 0.15
+--scale 4 --model realesrgan-x4plus --quality 15 --format mp4 --deduplicate --dedup-threshold 0.98 --enable-rife --target-fps 24 --audio-enhance --scratch-sensitivity 0.5 --grain-reduction 0.15
+```
+
+### B&W to Color Archive (Full Colorization)
+```bash
+--scale 4 --model realesrgan-x4plus --colorize --colorize-model ddcolor --auto-enhance --quality 15 --deduplicate --enable-rife --target-fps 24 --audio-enhance --scratch-sensitivity 0.5 --grain-reduction 0.2
 ```
 
 ### Archive Quality (Maximum - Color)
 ```bash
---scale 4 --quality 12 --auto-enhance --enable-rife --target-fps 24 --deduplicate --audio-enhance
+--scale 4 --model realesrgan-x4plus --quality 12 --auto-enhance --enable-rife --target-fps 24 --deduplicate --audio-enhance
 ```
 
 ### Fast Preview
 ```bash
---scale 2 --quality 23 --no-face-restore --no-defect-repair
+--scale 2 --model realesrgan-x4plus --quality 23 --no-face-restore --no-defect-repair
 ```
 
 ### Old Film Restoration (Heavy Damage)
 ```bash
---scale 4 --auto-enhance --deduplicate --enable-rife --target-fps 24 --scratch-sensitivity 0.7 --grain-reduction 0.4
+--scale 4 --model realesrgan-x4plus --auto-enhance --deduplicate --enable-rife --target-fps 24 --scratch-sensitivity 0.7 --grain-reduction 0.4
 ```
 
 ### Silent Film (Colorize)
 ```bash
---scale 4 --colorize --colorize-model ddcolor --auto-enhance --enable-rife --target-fps 18
+--scale 4 --model realesrgan-x4plus --colorize --colorize-model ddcolor --auto-enhance --enable-rife --target-fps 18
 ```
 
 ---
@@ -397,4 +449,4 @@ vastai destroy instance <instance_id>
 
 ---
 
-*Last updated: 2026-01-07*
+*Last updated: 2026-01-09*

@@ -26,15 +26,16 @@ FRAMEWRIGHT_VASTAI_IMAGE = os.environ.get(
     "FRAMEWRIGHT_VASTAI_IMAGE", "pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime"
 )
 
-# GPU type mappings for cost optimization
+# GPU type mappings for cost optimization (best bang for buck)
 VASTAI_GPU_RANKING = [
     # (search_term, min_vram, max_price_per_hour)
-    ("RTX 4090", 24, 0.50),
-    ("RTX 3090", 24, 0.30),
+    ("RTX 5090", 32, 0.90),  # Fastest, excellent value
+    ("RTX 4090", 24, 0.70),  # Best all-rounder
+    ("RTX 3090", 24, 0.45),  # Great budget option
+    ("RTX 4080", 16, 0.50),
+    ("RTX 3080", 10, 0.35),
     ("A100", 40, 1.50),
     ("A6000", 48, 0.70),
-    ("RTX 4080", 16, 0.35),
-    ("RTX 3080", 10, 0.20),
 ]
 
 
@@ -253,6 +254,40 @@ class VastAIProvider(CloudProvider):
         Returns:
             Best offer dict or None if no suitable offers.
         """
+        offers = self.find_all_suitable_offers(
+            gpu_type=gpu_type,
+            min_vram_gb=min_vram_gb,
+            max_price_per_hour=max_price_per_hour,
+            min_upload_speed=min_upload_speed,
+            min_download_speed=min_download_speed,
+            disk_space_gb=disk_space_gb,
+        )
+        return offers[0] if offers else None
+
+    def find_all_suitable_offers(
+        self,
+        gpu_type: str = "RTX_4090",
+        min_vram_gb: int = 16,
+        max_price_per_hour: float = 2.0,
+        min_upload_speed: float = 100,
+        min_download_speed: float = 100,
+        disk_space_gb: int = 50,
+        max_offers: int = 10,
+    ) -> List[Dict]:
+        """Find all suitable GPU offers sorted by price (cheapest first).
+
+        Args:
+            gpu_type: Preferred GPU type (used as search term).
+            min_vram_gb: Minimum VRAM required.
+            max_price_per_hour: Maximum acceptable price per hour.
+            min_upload_speed: Minimum upload speed in Mbps.
+            min_download_speed: Minimum download speed in Mbps.
+            disk_space_gb: Required disk space.
+            max_offers: Maximum number of offers to return.
+
+        Returns:
+            List of offer dicts sorted by price, empty if none found.
+        """
         try:
             # Build query for GPU search
             query = {
@@ -294,16 +329,17 @@ class VastAIProvider(CloudProvider):
                 )
                 offers = data.get("offers", [])
 
-            if offers:
-                return offers[0]  # Return cheapest suitable offer
-
-            return None
+            # Return up to max_offers, sorted by price
+            return offers[:max_offers]
 
         except Exception as e:
             raise CloudError(f"Failed to search offers: {e}")
 
     def submit_job(self, config: ProcessingConfig) -> str:
         """Submit a video processing job to Vast.ai.
+
+        Automatically retries with next cheapest GPU if an offer becomes
+        unavailable (400 error) during submission.
 
         Args:
             config: Processing configuration.
@@ -318,23 +354,92 @@ class VastAIProvider(CloudProvider):
             self.authenticate()
 
         job_id = f"fw_{uuid.uuid4().hex[:12]}"
+        min_vram = 16 if config.scale_factor == 2 else 24
 
-        try:
-            # Find optimal offer
-            min_vram = 16 if config.scale_factor == 2 else 24
-            offer = self.find_optimal_offer(
-                gpu_type=config.gpu_type,
+        # GPU fallback order: requested GPU first, then alternatives
+        import time
+        gpu_fallback_order = [config.gpu_type]
+
+        # Add fallback GPUs if not already the requested type
+        fallback_gpus = ["RTX_5090", "RTX_4090", "RTX_3090", "RTX_4080", "RTX_3080"]
+        for gpu in fallback_gpus:
+            if gpu != config.gpu_type and gpu not in gpu_fallback_order:
+                gpu_fallback_order.append(gpu)
+
+        last_error = None
+        tried_gpus = []
+
+        for gpu_type in gpu_fallback_order:
+            # Find offers for this GPU type
+            offers = self.find_all_suitable_offers(
+                gpu_type=gpu_type,
                 min_vram_gb=min_vram,
                 max_price_per_hour=2.0,
                 disk_space_gb=100,
+                max_offers=3,
             )
 
-            if not offer:
-                raise JobSubmissionError(
-                    f"No suitable GPU offers found for {config.gpu_type} with {min_vram}GB VRAM"
-                )
+            if not offers:
+                continue  # No offers for this GPU, try next type
 
-            offer_id = offer["id"]
+            tried_gpus.append(gpu_type)
+
+            # Try up to 2 offers per GPU type
+            for attempt, offer in enumerate(offers[:2]):
+                offer_id = offer["id"]
+                offer_price = offer.get("dph_total", 0)
+                offer_gpu = offer.get("gpu_name", "Unknown")
+
+                try:
+                    result = self._try_submit_with_offer(job_id, offer_id, config)
+                    if gpu_type != config.gpu_type:
+                        print(f"  Successfully secured {offer_gpu} @ ${offer_price:.2f}/hr (fallback)")
+                    return result
+                except CloudError as e:
+                    error_msg = str(e)
+                    last_error = e
+
+                    # Rate limited - wait and continue to next GPU type
+                    if "429" in error_msg or "Too Many Requests" in error_msg:
+                        print(f"  Rate limited. Waiting 5 seconds before trying different GPU...")
+                        time.sleep(5)
+                        break  # Move to next GPU type
+
+                    # Offer unavailable (400 error) - try next offer
+                    if "400" in error_msg or "Bad Request" in error_msg:
+                        # Show actual error for debugging
+                        print(f"  {offer_gpu} @ ${offer_price:.2f}/hr failed: {error_msg[:100]}")
+                        time.sleep(1)  # Brief delay
+                        continue
+
+                    # Other errors - raise immediately
+                    raise JobSubmissionError(f"Failed to submit Vast.ai job: {e}")
+
+            # Tried all offers for this GPU type, move to next
+            if gpu_type == config.gpu_type:
+                print(f"  No {gpu_type.replace('_', ' ')} available, trying alternatives...")
+
+        # All GPU types exhausted
+        raise JobSubmissionError(
+            f"Could not secure any GPU. Tried: {', '.join(tried_gpus)}. "
+            f"Vast.ai may be very busy - try again in a few minutes."
+        )
+
+    def _try_submit_with_offer(self, job_id: str, offer_id: int, config: ProcessingConfig) -> str:
+        """Attempt to submit a job with a specific offer.
+
+        Args:
+            job_id: Job ID to use.
+            offer_id: Vast.ai offer ID to rent.
+            config: Processing configuration.
+
+        Returns:
+            Job ID if successful.
+
+        Raises:
+            CloudError: If submission fails.
+        """
+        try:
 
             # Get rclone config for Google Drive access
             import base64
@@ -355,6 +460,8 @@ class VastAIProvider(CloudProvider):
                 # Use PyTorch backend (CUDA) instead of ncnn-vulkan (Vulkan)
                 # PyTorch works reliably in Docker; Vulkan often doesn't
                 "FRAMEWRIGHT_BACKEND": "pytorch",
+                # API key for auto-destroy
+                "VASTAI_API_KEY": self._api_key,
             }
 
             # Build restoration command with all options
@@ -554,9 +661,24 @@ echo "=== Starting restoration ==="
 kill $SYNC_PID 2>/dev/null || true
 
 {upload_section}
+
+echo "=== Saving logs to Google Drive ==="
+# Capture full log for debugging
+script -q /dev/null -c "dmesg" > /workspace/system.log 2>&1 || true
+cp /var/log/onstart*.log /workspace/ 2>/dev/null || true
+# Create combined log
+cat /workspace/*.log > /workspace/job_log.txt 2>/dev/null || true
+rclone copy /workspace/job_log.txt "{output_base}_logs/" --quiet || true
+echo "Logs saved to: {output_base}_logs/"
+
 echo "=== Done! Shutting down instance ==="
-# Auto-destroy to avoid idle billing
-vastai destroy instance $VAST_CONTAINERLABEL || true
+# Auto-destroy via API (more reliable than vastai CLI)
+INSTANCE_ID=$(echo $VAST_CONTAINERLABEL | tr -d '[:space:]')
+if [ -n "$INSTANCE_ID" ]; then
+    curl -s -X DELETE "https://cloud.vast.ai/api/v0/instances/$INSTANCE_ID/?api_key=$VASTAI_API_KEY" || true
+fi
+# Fallback to vastai CLI
+vastai destroy instance $VAST_CONTAINERLABEL 2>/dev/null || true
 """
 
             # Create instance from offer
@@ -591,9 +713,8 @@ vastai destroy instance $VAST_CONTAINERLABEL || true
             return job_id
 
         except Exception as e:
-            if isinstance(e, JobSubmissionError):
-                raise
-            raise JobSubmissionError(f"Failed to submit Vast.ai job: {e}")
+            # Re-raise as CloudError so retry logic can handle it
+            raise CloudError(f"{e}")
 
     def get_instance_id(self, job_id: str) -> Optional[str]:
         """Get the Vast.ai instance ID for a job."""
