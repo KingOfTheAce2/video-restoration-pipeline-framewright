@@ -984,6 +984,10 @@ def run_job(job_id):
                             log_line=f"✓ Deduplication already completed - skipping")
                 # frames_dir already has deduplicated frames
                 frame_count = len(list(frames_dir.glob("*.png")))
+                # Set variables for consistency (no frames removed since already done)
+                removed = 0
+                before_count = frame_count
+                after_count = frame_count
             else:
                 _update_job(job_id, stage="dedup", stage_label="Removing duplicate frames",
                             stages_done=list(stages_done), progress=14,
