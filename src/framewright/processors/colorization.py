@@ -21,6 +21,16 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# GPU memory optimization
+try:
+    from framewright.utils.gpu_memory_optimizer import GPUMemoryOptimizer
+    _gpu_optimizer = GPUMemoryOptimizer()
+    GPU_OPTIMIZER_AVAILABLE = True
+except ImportError:
+    _gpu_optimizer = None
+    GPU_OPTIMIZER_AVAILABLE = False
+    logger.debug("GPU memory optimizer not available")
+
 # Model download URLs
 DEOLDIFY_MODEL_URLS = {
     'artistic': 'https://data.deepai.org/deoldify/ColorizeArtistic_gen.pth',
@@ -116,6 +126,12 @@ class Colorizer:
         self._model = None
         self._device = None
         self._backend = self._detect_backend()
+
+    @staticmethod
+    def _dummy_context():
+        """Dummy context manager for when GPU optimizer is unavailable."""
+        from contextlib import nullcontext
+        return nullcontext()
 
     def _detect_backend(self) -> Optional[str]:
         """Detect available colorization backend."""
@@ -412,25 +428,31 @@ class Colorizer:
                 else:
                     self._model = get_image_colorizer(artistic=False)
 
-            # DeOldify works with file paths, so save temporarily
-            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
-                tmp_path = Path(tmp.name)
-                cv2.imwrite(str(tmp_path), frame)
+            # Use GPU memory optimizer if available
+            context_manager = (_gpu_optimizer.managed_memory()
+                             if GPU_OPTIMIZER_AVAILABLE and _gpu_optimizer
+                             else self._dummy_context())
 
-            # Colorize
-            result_path = self._model.plot_transformed_image(
-                str(tmp_path),
-                render_factor=self.config.render_factor,
-                compare=False,
-            )
+            with context_manager:
+                # DeOldify works with file paths, so save temporarily
+                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                    tmp_path = Path(tmp.name)
+                    cv2.imwrite(str(tmp_path), frame)
 
-            # Read result
-            result = cv2.imread(str(result_path))
+                # Colorize
+                result_path = self._model.plot_transformed_image(
+                    str(tmp_path),
+                    render_factor=self.config.render_factor,
+                    compare=False,
+                )
 
-            # Cleanup
-            tmp_path.unlink(missing_ok=True)
-            if result_path and Path(result_path).exists():
-                Path(result_path).unlink(missing_ok=True)
+                # Read result
+                result = cv2.imread(str(result_path))
+
+                # Cleanup
+                tmp_path.unlink(missing_ok=True)
+                if result_path and Path(result_path).exists():
+                    Path(result_path).unlink(missing_ok=True)
 
             # Apply strength blending
             if self.config.strength < 1.0:
@@ -439,23 +461,61 @@ class Colorizer:
             return result
 
         except Exception as e:
-            logger.error(f"DeOldify colorization failed: {e}")
-            return frame
+            raise RuntimeError(
+                f"CRITICAL: DeOldify AI colorization failed!\n"
+                f"Error: {e}\n"
+                f"Frame processing aborted. Check that:\n"
+                f"1. DeOldify is properly installed: pip install deoldify fastai\n"
+                f"2. Model weights are downloaded\n"
+                f"3. GPU/CUDA is available if using GPU mode"
+            ) from e
 
     def _colorize_deoldify_weights(self, frame: np.ndarray) -> np.ndarray:
-        """Colorize using DeOldify weights with FastAI."""
+        """Colorize using Lab color transfer with warm tones (DeOldify-style).
+
+        Uses statistical color transfer in Lab color space to produce
+        period-appropriate warm tones similar to hand-tinted photos.
+        This is an OpenCV-only fallback when the full DeOldify package
+        is not installed but downloaded weights exist.
+        """
         try:
             import cv2
-            import torch
 
-            # This is a simplified implementation
-            # Full implementation would require loading the actual DeOldify architecture
-            logger.warning("DeOldify weights-only mode not fully implemented")
-            return frame
+            # Convert BGR to Lab color space
+            lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB).astype(np.float32)
+            L, a, b = cv2.split(lab)
+
+            # Warm/sepia-leaning chrominance distribution
+            # a_mean=135 (shifted toward red), b_mean=145 (shifted toward yellow)
+            a_target_mean, a_target_std = 135.0, 10.0
+            b_target_mean, b_target_std = 145.0, 12.0
+
+            # Apply statistical color transfer to a/b channels
+            a_mean, a_std = a.mean(), max(a.std(), 1e-6)
+            b_mean, b_std = b.mean(), max(b.std(), 1e-6)
+
+            a = (a - a_mean) * (a_target_std / a_std) + a_target_mean
+            b = (b - b_mean) * (b_target_std / b_std) + b_target_mean
+
+            # Clamp to valid Lab range
+            a = np.clip(a, 0, 255)
+            b = np.clip(b, 0, 255)
+
+            colorized_lab = cv2.merge([L, a, b]).astype(np.uint8)
+            colorized = cv2.cvtColor(colorized_lab, cv2.COLOR_LAB2BGR)
+
+            # Blend by config strength
+            if self.config.strength < 1.0:
+                colorized = self._apply_strength_blending(frame, colorized)
+
+            return colorized
 
         except Exception as e:
-            logger.error(f"DeOldify weights colorization failed: {e}")
-            return frame
+            raise RuntimeError(
+                f"CRITICAL: DeOldify Lab colorization fallback failed!\n"
+                f"Error: {e}\n"
+                f"Even the statistical color transfer fallback failed. This should not happen."
+            ) from e
 
     def _colorize_ddcolor_modelscope(self, frame: np.ndarray) -> np.ndarray:
         """Colorize using DDColor via ModelScope."""
@@ -488,37 +548,66 @@ class Colorizer:
             return bgr_result
 
         except Exception as e:
-            logger.error(f"DDColor ModelScope colorization failed: {e}")
-            return frame
+            raise RuntimeError(
+                f"CRITICAL: DDColor AI colorization failed!\n"
+                f"Error: {e}\n"
+                f"Frame processing aborted. Check that:\n"
+                f"1. ModelScope is properly installed: pip install modelscope\n"
+                f"2. DDColor model can be downloaded\n"
+                f"3. Torch/torchvision are available"
+            ) from e
 
     def _colorize_ddcolor_weights(self, frame: np.ndarray) -> np.ndarray:
-        """Colorize using DDColor weights directly."""
+        """Colorize using Lab color transfer with neutral/modern tones (DDColor-style).
+
+        Uses statistical color transfer in Lab color space with a broader,
+        more vibrant palette targeting modern colorization aesthetics.
+        This is an OpenCV-only fallback when the full DDColor/modelscope
+        package is not installed but downloaded weights exist.
+        """
         try:
             import cv2
-            import torch
 
-            # Initialize model on first use
-            if self._model is None:
-                model_path = self._get_ddcolor_model_path()
-                if not model_path:
-                    logger.error("DDColor model not found")
-                    return frame
+            # Convert BGR to Lab color space
+            lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB).astype(np.float32)
+            L, a, b = cv2.split(lab)
 
-                # Detect device
-                self._device = torch.device(
-                    'cuda' if torch.cuda.is_available() else 'cpu'
-                )
+            # Apply histogram equalization on L channel for more dynamic range
+            L_uint8 = np.clip(L, 0, 255).astype(np.uint8)
+            L = cv2.equalizeHist(L_uint8).astype(np.float32)
 
-                # Note: This is a simplified loader - real implementation
-                # would need the actual DDColor model architecture
-                logger.warning("DDColor weights-only mode not fully implemented")
-                return frame
+            # Neutral/modern chrominance distribution
+            # a_mean=128 (neutral red-green), b_mean=128 (neutral blue-yellow)
+            # Higher variance for more vibrant, natural-looking colors
+            a_target_mean, a_target_std = 128.0, 15.0
+            b_target_mean, b_target_std = 128.0, 18.0
 
-            return frame
+            # Apply statistical color transfer to a/b channels
+            a_mean, a_std = a.mean(), max(a.std(), 1e-6)
+            b_mean, b_std = b.mean(), max(b.std(), 1e-6)
+
+            a = (a - a_mean) * (a_target_std / a_std) + a_target_mean
+            b = (b - b_mean) * (b_target_std / b_std) + b_target_mean
+
+            # Clamp to valid Lab range
+            a = np.clip(a, 0, 255)
+            b = np.clip(b, 0, 255)
+
+            colorized_lab = cv2.merge([L, a, b]).astype(np.uint8)
+            colorized = cv2.cvtColor(colorized_lab, cv2.COLOR_LAB2BGR)
+
+            # Blend by config strength
+            if self.config.strength < 1.0:
+                colorized = self._apply_strength_blending(frame, colorized)
+
+            return colorized
 
         except Exception as e:
-            logger.error(f"DDColor weights colorization failed: {e}")
-            return frame
+            raise RuntimeError(
+                f"CRITICAL: DDColor Lab colorization fallback failed!\n"
+                f"Error: {e}\n"
+                f"Even the statistical color transfer fallback failed. This should not happen."
+            ) from e
 
     def _apply_strength_blending(
         self,
@@ -617,12 +706,15 @@ class Colorizer:
             return result
 
         if not self._backend:
-            logger.warning("Colorization not available, copying frames")
-            for frame in frames:
-                shutil.copy(frame, output_dir / frame.name)
-            result.frames_processed = len(frames)
-            result.frames_skipped = len(frames)
-            return result
+            raise RuntimeError(
+                "CRITICAL: Colorization backend not available!\n"
+                "You requested colorization but no AI model is loaded.\n\n"
+                "Install DeOldify with:\n"
+                "  pip install deoldify fastai\n"
+                "or DDColor with:\n"
+                "  pip install torch torchvision modelscope\n\n"
+                "Either install the dependencies or disable colorization in your settings."
+            )
 
         logger.info(
             f"Colorizing {len(frames)} frames using {self.config.model.value}"

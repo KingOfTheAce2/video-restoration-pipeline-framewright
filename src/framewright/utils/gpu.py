@@ -60,6 +60,24 @@ def is_nvidia_gpu_available() -> bool:
     return shutil.which("nvidia-smi") is not None
 
 
+def is_gpu_available() -> bool:
+    """Check if any GPU is available for processing.
+
+    Returns True if NVIDIA GPU (via nvidia-smi) or any other GPU
+    is detected on the system.
+    """
+    if is_nvidia_gpu_available():
+        return True
+    # Fallback: check for any GPU via platform-specific detection
+    if platform.system() == "Windows":
+        try:
+            gpus = get_windows_gpu_info()
+            return len(gpus) > 0
+        except Exception:
+            return False
+    return False
+
+
 def _detect_vendor(gpu_name: str) -> GPUVendor:
     """Detect GPU vendor from device name."""
     name_lower = gpu_name.lower()

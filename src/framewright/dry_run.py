@@ -102,46 +102,146 @@ class DryRunResult:
     can_proceed: bool = True
     blocking_issues: List[str] = field(default_factory=list)
 
-    def format_summary(self) -> str:
-        """Generate human-readable summary."""
+    def format_summary(self, use_color: bool = True) -> str:
+        """Generate human-readable summary with improved formatting.
+
+        Args:
+            use_color: Whether to use ANSI color codes
+        """
+        # ANSI color codes
+        if use_color:
+            BOLD = '\033[1m'
+            GREEN = '\033[92m'
+            YELLOW = '\033[93m'
+            RED = '\033[91m'
+            CYAN = '\033[96m'
+            RESET = '\033[0m'
+            DIM = '\033[2m'
+        else:
+            BOLD = GREEN = YELLOW = RED = CYAN = RESET = DIM = ''
+
         width, height = self.input_resolution
         out_width, out_height = self.output_resolution
         duration_str = self._format_duration(self.input_duration_seconds)
 
+        # Calculate scaling factor for display
+        scale_str = f"{self.output_resolution[0] // self.input_resolution[0]}x"
+
         lines = [
             "",
-            "Dry Run Summary:",
-            f"Input: {self.input_path} ({width}x{height}, {self.input_fps:.2f}fps, {duration_str} duration)",
-            f"Output: {self.output_path}",
+            f"{BOLD}+{'=' * 60}+{RESET}",
+            f"{BOLD}|{'DRY RUN ANALYSIS':^60}|{RESET}",
+            f"{BOLD}+{'=' * 60}+{RESET}",
             "",
-            "Processing Pipeline:",
+            f"{BOLD}INPUT VIDEO{RESET}",
+            f"  Path:       {self.input_path}",
+            f"  Resolution: {width}x{height}",
+            f"  FPS:        {self.input_fps:.2f}",
+            f"  Duration:   {duration_str}",
+            f"  Frames:     {self.input_frame_count:,}",
+            f"  Codec:      {self.input_codec}",
+            f"  Audio:      {'Yes' if self.has_audio else 'No'}",
+            "",
+            f"{BOLD}OUTPUT VIDEO{RESET}",
+            f"  Path:       {self.output_path}",
+            f"  Resolution: {out_width}x{out_height} ({scale_str} upscale)",
+            f"  FPS:        {self.output_fps:.2f}",
+            f"  Frames:     {self.output_frame_count:,}",
+            f"  Format:     {self.output_format.upper()}",
+            "",
+            f"{BOLD}PROCESSING PIPELINE{RESET}",
         ]
 
+        # Add pipeline steps with visual indicators
         for step in self.pipeline_steps:
-            lines.append(f"  {step.number}. {step.description}")
+            gpu_indicator = f" {CYAN}[GPU]{RESET}" if step.requires_gpu else ""
+            lines.append(f"  {step.number}. {step.description}{gpu_indicator}")
+
+        # Time estimate section
+        lines.extend([
+            "",
+            f"{BOLD}TIME ESTIMATE{RESET}",
+            f"  Total: {CYAN}{self.time_estimate.time_range_str}{RESET}",
+        ])
+
+        # Show breakdown if significant
+        if self.time_estimate.total_minutes > 5:
+            lines.append(f"  {DIM}Breakdown:{RESET}")
+            lines.append(f"    {DIM}Extraction:   {self.time_estimate.extraction_seconds/60:.1f} min{RESET}")
+            lines.append(f"    {DIM}Enhancement:  {self.time_estimate.enhancement_seconds/60:.1f} min{RESET}")
+            if self.time_estimate.interpolation_seconds > 0:
+                lines.append(f"    {DIM}Interpolate:  {self.time_estimate.interpolation_seconds/60:.1f} min{RESET}")
+            lines.append(f"    {DIM}Encoding:     {self.time_estimate.encoding_seconds/60:.1f} min{RESET}")
+
+        # Disk usage with visual bar
+        temp_gb = self.temp_disk_usage_bytes / (1024**3)
+        output_gb = self.output_disk_usage_bytes / (1024**3)
+        total_gb = self.total_disk_required_bytes / (1024**3)
+        avail_gb = self.hardware.disk_available_bytes / (1024**3)
 
         lines.extend([
             "",
-            f"Estimated Time: {self.time_estimate.time_range_str}",
-            f"Estimated Disk Usage: ~{self.temp_disk_usage_bytes / (1024**3):.1f} GB (temp) + "
-            f"{self.output_disk_usage_bytes / (1024**3):.1f} GB (output)",
-            f"Required VRAM: {self.hardware.vram_required_mb / 1024:.1f} GB",
+            f"{BOLD}DISK USAGE{RESET}",
+            f"  Temporary:  {temp_gb:.1f} GB",
+            f"  Output:     {output_gb:.1f} GB",
+            f"  Total:      {CYAN}{total_gb:.1f} GB{RESET}",
+            f"  Available:  {avail_gb:.1f} GB",
+        ])
+
+        # Disk usage bar
+        if avail_gb > 0:
+            usage_pct = min(100, int((total_gb / avail_gb) * 100))
+            bar_width = 30
+            filled = int(bar_width * usage_pct / 100)
+            bar_color = GREEN if usage_pct < 70 else (YELLOW if usage_pct < 90 else RED)
+            bar = f"{bar_color}{'#' * filled}{RESET}{DIM}{'-' * (bar_width - filled)}{RESET}"
+            lines.append(f"  [{bar}] {usage_pct}%")
+
+        # Hardware section
+        lines.extend([
+            "",
+            f"{BOLD}HARDWARE{RESET}",
         ])
 
         if self.hardware.has_gpu:
-            lines.append(f"GPU: {self.hardware.gpu_name} ({self.hardware.vram_available_mb} MB available)")
+            vram_gb = self.hardware.vram_available_mb / 1024
+            req_gb = self.hardware.vram_required_mb / 1024
+            vram_ok = self.hardware.vram_sufficient
+            status = f"{GREEN}OK{RESET}" if vram_ok else f"{YELLOW}Tiling{RESET}"
+            lines.append(f"  GPU:        {self.hardware.gpu_name}")
+            lines.append(f"  VRAM:       {vram_gb:.1f} GB available, {req_gb:.1f} GB required [{status}]")
+            if not vram_ok and self.hardware.recommended_tile_size > 0:
+                lines.append(f"  Tile Size:  {self.hardware.recommended_tile_size}px (auto-adjusted)")
         else:
-            lines.append("GPU: No GPU detected (CPU processing will be much slower)")
+            lines.append(f"  GPU:        {YELLOW}None detected{RESET}")
+            lines.append(f"  {DIM}Processing will use CPU (significantly slower){RESET}")
 
+        # Warnings section
         if self.warnings:
-            lines.extend(["", "Warnings:"])
+            lines.extend([
+                "",
+                f"{YELLOW}{BOLD}WARNINGS{RESET}",
+            ])
             for warning in self.warnings:
-                lines.append(f"  - {warning}")
+                lines.append(f"  {YELLOW}!{RESET} {warning}")
 
+        # Blocking issues section
         if self.blocking_issues:
-            lines.extend(["", "BLOCKING ISSUES:"])
+            lines.extend([
+                "",
+                f"{RED}{BOLD}BLOCKING ISSUES{RESET}",
+            ])
             for issue in self.blocking_issues:
-                lines.append(f"  - {issue}")
+                lines.append(f"  {RED}X{RESET} {issue}")
+
+        # Final status
+        lines.append("")
+        if self.can_proceed:
+            lines.append(f"{GREEN}{BOLD}Status: Ready to process{RESET}")
+        else:
+            lines.append(f"{RED}{BOLD}Status: Cannot proceed - resolve blocking issues{RESET}")
+
+        lines.append("")
 
         return "\n".join(lines)
 

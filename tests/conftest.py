@@ -14,6 +14,7 @@ from tests.fixtures.conftest import (
     generate_png_image,
     check_ffmpeg_available,
     generate_test_video_ffmpeg,
+    corrupt_video,
 )
 
 
@@ -431,3 +432,157 @@ def mock_shutil_which():
         }
         return tools.get(command)
     return which_mock
+
+
+# ============================================================================
+# New fixtures for comprehensive test suite
+# ============================================================================
+
+
+@pytest.fixture
+def tmp_project_dir(tmp_path):
+    """Create a temporary project directory with structure.
+
+    Creates:
+        - project_dir/
+        - project_dir/temp/
+        - project_dir/temp/frames/
+        - project_dir/temp/enhanced/
+        - project_dir/.framewright/
+
+    Returns:
+        Path to the project directory
+    """
+    project = tmp_path / "framewright_project"
+    project.mkdir()
+    (project / "temp").mkdir()
+    (project / "temp" / "frames").mkdir()
+    (project / "temp" / "enhanced").mkdir()
+    (project / ".framewright").mkdir()
+    return project
+
+
+@pytest.fixture
+def sample_config(tmp_project_dir):
+    """Create a valid Config object for testing.
+
+    Returns:
+        A Config instance with reasonable test defaults
+    """
+    from framewright.config import Config
+
+    return Config(
+        project_dir=tmp_project_dir,
+        scale_factor=2,
+        model_name="realesrgan-x2plus",
+        crf=23,
+        preset="fast",
+        enable_checkpointing=True,
+        checkpoint_interval=10,
+        enable_validation=False,
+        enable_disk_validation=False,
+        enable_vram_monitoring=False,
+        max_retries=1,
+        retry_delay=0.1,
+        parallel_frames=1,
+        continue_on_error=True,
+    )
+
+
+@pytest.fixture
+def mock_video_path(tmp_path):
+    """Create a mock video file path with minimal content.
+
+    Returns:
+        Path to the mock video file
+    """
+    video_path = tmp_path / "test_video.mp4"
+    # Write minimal MP4-like content for testing
+    video_path.write_bytes(b'\x00\x00\x00\x1cftypisom\x00\x00\x00\x00isomavc1')
+    return video_path
+
+
+@pytest.fixture
+def sample_checkpoint_data():
+    """Sample checkpoint data for testing.
+
+    Returns:
+        Dict with valid checkpoint structure
+    """
+    from datetime import datetime
+
+    return {
+        "stage": "enhance",
+        "last_completed_frame": 50,
+        "total_frames": 100,
+        "source_path": "/path/to/video.mp4",
+        "metadata": {"width": 1920, "height": 1080, "fps": 24.0},
+        "frames": [
+            {
+                "frame_number": i,
+                "input_path": f"/path/to/frame_{i:08d}.png",
+                "output_path": f"/path/to/enhanced/frame_{i:08d}.png",
+                "checksum": f"abc{i:04d}",
+                "processed": True,
+                "timestamp": datetime.now().isoformat(),
+            }
+            for i in range(50)
+        ],
+        "checkpoint_interval": 100,
+        "created_at": datetime.now().isoformat(),
+        "updated_at": datetime.now().isoformat(),
+        "config_hash": "testhash123",
+    }
+
+
+@pytest.fixture
+def corrupt_checkpoint_file(tmp_path):
+    """Create a corrupt checkpoint file for testing error handling.
+
+    Returns:
+        Path to the corrupt checkpoint file
+    """
+    checkpoint_dir = tmp_path / ".framewright"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_file = checkpoint_dir / "checkpoint.json"
+
+    # Write various types of corrupted content
+    checkpoint_file.write_text("{ invalid json content without closing brace")
+    return checkpoint_file
+
+
+@pytest.fixture
+def empty_checkpoint_file(tmp_path):
+    """Create an empty checkpoint file for testing.
+
+    Returns:
+        Path to the empty checkpoint file
+    """
+    checkpoint_dir = tmp_path / ".framewright"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_file = checkpoint_dir / "checkpoint.json"
+    checkpoint_file.write_text("")
+    return checkpoint_file
+
+
+@pytest.fixture
+def mock_dry_run_config(tmp_project_dir):
+    """Create a Config with dry_run compatible settings.
+
+    Returns:
+        A Config instance suitable for dry run testing
+    """
+    from framewright.config import Config
+
+    return Config(
+        project_dir=tmp_project_dir,
+        scale_factor=2,
+        model_name="realesrgan-x2plus",
+        crf=23,
+        preset="fast",
+        enable_checkpointing=False,
+        enable_validation=False,
+        enable_disk_validation=False,
+        enable_vram_monitoring=False,
+        require_gpu=False,
+    )

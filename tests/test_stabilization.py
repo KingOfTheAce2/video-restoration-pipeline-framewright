@@ -322,21 +322,30 @@ class TestVideoStabilizer:
     def test_is_available(self):
         """Test checking if stabilization is available."""
         stabilizer = VideoStabilizer()
-        # Result depends on system configuration
-        result = stabilizer.is_available()
-        assert isinstance(result, bool)
+        # Mock vidstab as unavailable and OpenCV as unavailable
+        stabilizer._vidstab_available = False
+        stabilizer._ffmpeg_available = False
+        with patch("framewright.processors.stabilization.HAS_OPENCV", False):
+            result = stabilizer.is_available()
+            assert result is False
+        # With OpenCV available, should be True
+        with patch("framewright.processors.stabilization.HAS_OPENCV", True):
+            result = stabilizer.is_available()
+            assert result is True
 
     def test_check_ffmpeg(self):
         """Test FFmpeg availability check."""
         stabilizer = VideoStabilizer()
 
-        with patch("shutil.which", return_value="/usr/bin/ffmpeg"):
+        # Reset cached value
+        stabilizer._ffmpeg_available = None
+        with patch("framewright.processors.stabilization.get_ffmpeg_path", return_value="/usr/bin/ffmpeg"):
             assert stabilizer._check_ffmpeg() is True
 
         # Reset cached value
         stabilizer._ffmpeg_available = None
 
-        with patch("shutil.which", return_value=None):
+        with patch("framewright.processors.stabilization.get_ffmpeg_path", side_effect=FileNotFoundError):
             assert stabilizer._check_ffmpeg() is False
 
     def test_check_vidstab(self):

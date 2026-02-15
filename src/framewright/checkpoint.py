@@ -1,5 +1,8 @@
 """Checkpointing and recovery module for the FrameWright pipeline.
 
+.. deprecated::
+    DEPRECATED: Legacy checkpoint facade. Use `framewright.engine.checkpoint` for new code.
+
 Provides frame-level checkpointing with resume capability for crash recovery.
 """
 import hashlib
@@ -228,7 +231,8 @@ class CheckpointManager:
             stage: New stage name
         """
         if self._checkpoint is None:
-            raise RuntimeError("No checkpoint active.")
+            logger.debug("No checkpoint active, skipping stage update")
+            return
 
         self._checkpoint.stage = stage
         self._checkpoint.updated_at = datetime.now().isoformat()

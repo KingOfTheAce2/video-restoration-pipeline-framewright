@@ -1,15 +1,15 @@
-"""AI-Powered Audio Synchronization for video restoration pipeline.
+"""Audio-visual synchronization repair module for FrameWright.
 
 This module provides audio-video synchronization detection and correction
 capabilities using signal processing techniques for precise sync alignment.
 
 Key Features:
 -------------
-- Audio waveform analysis for beats and speech patterns
-- Visual motion detection for sync reference points
+- Audio peak/fingerprint analysis for sync detection
+- Visual motion/scene change detection for sync reference points
 - Cross-correlation based offset calculation
-- Automatic drift correction for frame interpolation
-- Quality-preserving audio stretching/compression
+- Automatic drift correction with progressive drift detection
+- Quality-preserving audio resampling and timing adjustment
 
 Sync Drift Causes:
 ------------------
@@ -18,30 +18,36 @@ Sync Drift Causes:
 - Frame interpolation changing video duration
 - Damaged film with missing frames
 - Improper capture/digitization
+- Audio/video clock mismatch during recording
 
 Detection Methods:
 -----------------
-- Audio onset detection (transients, beats, speech)
-- Visual motion peaks (scene cuts, action)
-- Cross-correlation for offset calculation
-- Drift analysis over time
+- Audio fingerprint: Uses audio peaks and transients
+- Onset detection: Detects sound onsets (speech, music, effects)
+- Scene detection: Correlates audio with scene changes and motion peaks
 """
 
 import json
 import logging
-import math
 import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple, Any, Union
-
-import numpy as np
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from framewright.utils.dependencies import get_ffmpeg_path, get_ffprobe_path
 
 logger = logging.getLogger(__name__)
+
+# Check for numpy availability
+try:
+    import numpy as np
+    NUMPY_AVAILABLE = True
+except ImportError:
+    NUMPY_AVAILABLE = False
+    logger.debug("NumPy not available, using basic peak detection")
 
 
 class AudioSyncError(Exception):
@@ -49,6 +55,94 @@ class AudioSyncError(Exception):
     pass
 
 
+@dataclass
+class SyncAnalysis:
+    """Results from audio-video sync analysis.
+
+    Attributes:
+        drift_ms: Average drift in milliseconds.
+            Positive = audio leads video, Negative = audio lags video.
+        drift_direction: Direction of drift ("audio_ahead" or "video_ahead").
+        confidence: Confidence score for the detected offset (0.0-1.0).
+        samples_analyzed: Number of audio/video event pairs analyzed.
+        is_progressive: True if drift increases over time (clock mismatch).
+    """
+    drift_ms: float
+    drift_direction: str  # "audio_ahead" or "video_ahead"
+    confidence: float
+    samples_analyzed: int
+    is_progressive: bool  # True if drift increases over time
+
+    def __post_init__(self) -> None:
+        """Validate and normalize fields."""
+        # Ensure drift_direction is valid
+        if self.drift_direction not in ("audio_ahead", "video_ahead"):
+            # Auto-determine from drift_ms
+            self.drift_direction = "audio_ahead" if self.drift_ms > 0 else "video_ahead"
+
+        # Clamp confidence to valid range
+        self.confidence = max(0.0, min(1.0, self.confidence))
+
+    @property
+    def needs_correction(self) -> bool:
+        """Check if sync correction is recommended.
+
+        Returns:
+            True if drift exceeds threshold and confidence is sufficient.
+        """
+        return abs(self.drift_ms) > 40.0 and self.confidence >= 0.5
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert analysis to dictionary."""
+        return {
+            "drift_ms": self.drift_ms,
+            "drift_direction": self.drift_direction,
+            "confidence": self.confidence,
+            "samples_analyzed": self.samples_analyzed,
+            "is_progressive": self.is_progressive,
+            "needs_correction": self.needs_correction,
+        }
+
+
+@dataclass
+class SyncConfig:
+    """Configuration for audio sync detection and correction.
+
+    Attributes:
+        detection_method: Method for sync detection.
+            "audio_fingerprint" - Uses audio peaks and transients
+            "onset_detection" - Uses sound onset detection (librosa)
+        max_drift_ms: Maximum drift to attempt to correct (milliseconds).
+        correction_method: Method for applying sync correction.
+            "resample" - Resample audio to match video duration
+            "frame_shift" - Shift audio start/end points
+            "pts_adjust" - Adjust presentation timestamps (fastest)
+    """
+    detection_method: str = "audio_fingerprint"
+    max_drift_ms: float = 500.0
+    correction_method: str = "resample"
+
+    def __post_init__(self) -> None:
+        """Validate configuration values."""
+        valid_detection = ("audio_fingerprint", "onset_detection")
+        if self.detection_method not in valid_detection:
+            raise ValueError(
+                f"Invalid detection_method: {self.detection_method}. "
+                f"Must be one of {valid_detection}"
+            )
+
+        valid_correction = ("resample", "frame_shift", "pts_adjust")
+        if self.correction_method not in valid_correction:
+            raise ValueError(
+                f"Invalid correction_method: {self.correction_method}. "
+                f"Must be one of {valid_correction}"
+            )
+
+        if self.max_drift_ms <= 0:
+            raise ValueError("max_drift_ms must be positive")
+
+
+# Legacy dataclasses for backward compatibility
 @dataclass
 class AudioWaveformInfo:
     """Information about audio waveform characteristics.
@@ -75,45 +169,6 @@ class AudioWaveformInfo:
             List of peak timestamps in seconds.
         """
         return [pos / self.sample_rate for pos in self.peak_positions]
-
-
-@dataclass
-class SyncAnalysis:
-    """Results from audio-video sync analysis.
-
-    Attributes:
-        offset_ms: Detected offset in milliseconds.
-            Positive = audio leads video, Negative = audio lags video.
-        confidence: Confidence score for the detected offset (0.0-1.0).
-        drift_per_minute_ms: Detected drift rate in ms per minute.
-            Non-zero indicates progressive sync loss.
-        needs_correction: Whether sync correction is recommended.
-        audio_events_count: Number of audio events detected.
-        visual_events_count: Number of visual events detected.
-        correlation_score: Cross-correlation peak score.
-        analysis_method: Method used for analysis.
-    """
-    offset_ms: float
-    confidence: float
-    drift_per_minute_ms: float
-    needs_correction: bool
-    audio_events_count: int = 0
-    visual_events_count: int = 0
-    correlation_score: float = 0.0
-    analysis_method: str = "cross-correlation"
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert analysis to dictionary."""
-        return {
-            "offset_ms": self.offset_ms,
-            "confidence": self.confidence,
-            "drift_per_minute_ms": self.drift_per_minute_ms,
-            "needs_correction": self.needs_correction,
-            "audio_events_count": self.audio_events_count,
-            "visual_events_count": self.visual_events_count,
-            "correlation_score": self.correlation_score,
-            "analysis_method": self.analysis_method,
-        }
 
 
 @dataclass
@@ -148,20 +203,17 @@ class SyncCorrection:
         }
 
 
-class AudioSyncDetector:
-    """Detects audio-video synchronization issues.
+class AudioSyncAnalyzer:
+    """Analyzes audio-video synchronization using signal processing.
 
-    Analyzes audio waveform for beats, speech patterns, and transients,
-    then correlates with visual motion events to detect sync issues.
+    Detects sync drift by analyzing audio peaks/fingerprints and
+    correlating with visual motion events and scene changes.
 
     Example:
-        >>> detector = AudioSyncDetector()
-        >>> analysis = detector.analyze_sync(
-        ...     Path("video.mp4"),
-        ...     Path("audio.wav")
-        ... )
+        >>> analyzer = AudioSyncAnalyzer()
+        >>> analysis = analyzer.analyze_sync(Path("video.mp4"))
         >>> if analysis.needs_correction:
-        ...     print(f"Offset: {analysis.offset_ms}ms")
+        ...     print(f"Drift: {analysis.drift_ms}ms ({analysis.drift_direction})")
     """
 
     # Threshold for considering sync correction needed (in ms)
@@ -170,13 +222,14 @@ class AudioSyncDetector:
     # Minimum confidence for valid detection
     MIN_CONFIDENCE = 0.5
 
-    # Drift threshold (ms per minute) for flagging issues
-    DRIFT_THRESHOLD_MS_PER_MIN = 5.0
+    def __init__(self, config: Optional[SyncConfig] = None) -> None:
+        """Initialize the sync analyzer.
 
-    def __init__(self) -> None:
-        """Initialize the sync detector."""
+        Args:
+            config: Optional SyncConfig for customizing detection.
+        """
+        self.config = config or SyncConfig()
         self._verify_ffmpeg()
-        self._scipy_available = self._check_scipy()
         self._librosa_available = self._check_librosa()
 
     def _verify_ffmpeg(self) -> None:
@@ -189,17 +242,8 @@ class AudioSyncDetector:
                 "Please install FFmpeg for audio sync detection."
             ) from e
 
-    def _check_scipy(self) -> bool:
-        """Check if scipy is available."""
-        try:
-            import scipy.signal
-            return True
-        except ImportError:
-            logger.debug("scipy not available, using basic signal processing")
-            return False
-
     def _check_librosa(self) -> bool:
-        """Check if librosa is available."""
+        """Check if librosa is available for advanced onset detection."""
         try:
             import librosa
             return True
@@ -207,16 +251,91 @@ class AudioSyncDetector:
             logger.debug("librosa not available, using FFmpeg for onset detection")
             return False
 
-    def _extract_audio_to_wav(
+    def analyze_sync(
         self,
-        input_path: Path,
+        video_path: Path,
+        progress_callback: Optional[Callable[[str], None]] = None
+    ) -> SyncAnalysis:
+        """Analyze audio-video synchronization.
+
+        Extracts audio and video events, then calculates the drift
+        between them using cross-correlation.
+
+        Args:
+            video_path: Path to video file to analyze.
+            progress_callback: Optional callback for progress updates.
+
+        Returns:
+            SyncAnalysis with drift information.
+
+        Raises:
+            AudioSyncError: If analysis fails.
+        """
+        video_path = Path(video_path)
+        if not video_path.exists():
+            raise AudioSyncError(f"Video file not found: {video_path}")
+
+        logger.info(f"Analyzing sync for: {video_path}")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            audio_path = temp_path / "extracted_audio.wav"
+
+            if progress_callback:
+                progress_callback("Extracting audio...")
+
+            # Extract audio from video
+            self._extract_audio(video_path, audio_path)
+
+            if progress_callback:
+                progress_callback("Detecting audio peaks...")
+
+            # Detect audio peaks/events
+            audio_events = self._detect_audio_peaks(audio_path)
+
+            if progress_callback:
+                progress_callback("Detecting video events...")
+
+            # Detect video events (scene changes, motion peaks)
+            video_events = self._detect_video_events(video_path)
+
+            if progress_callback:
+                progress_callback("Calculating drift...")
+
+            # Calculate drift
+            drift_ms, confidence = self._calculate_drift(audio_events, video_events)
+
+            # Check for progressive drift
+            is_progressive = self._check_progressive_drift(
+                audio_events, video_events, audio_path
+            )
+
+            # Determine drift direction
+            drift_direction = "audio_ahead" if drift_ms > 0 else "video_ahead"
+
+            samples_analyzed = min(len(audio_events), len(video_events))
+
+            if progress_callback:
+                progress_callback("Analysis complete")
+
+            return SyncAnalysis(
+                drift_ms=drift_ms,
+                drift_direction=drift_direction,
+                confidence=confidence,
+                samples_analyzed=samples_analyzed,
+                is_progressive=is_progressive
+            )
+
+    def _extract_audio(
+        self,
+        video_path: Path,
         output_path: Path,
         sample_rate: int = 48000
     ) -> None:
         """Extract audio from video to WAV format.
 
         Args:
-            input_path: Path to input video/audio file.
+            video_path: Path to input video file.
             output_path: Path for output WAV file.
             sample_rate: Target sample rate.
 
@@ -225,7 +344,7 @@ class AudioSyncDetector:
         """
         command = [
             get_ffmpeg_path(), "-y",
-            "-i", str(input_path),
+            "-i", str(video_path),
             "-vn",  # No video
             "-acodec", "pcm_s16le",
             "-ar", str(sample_rate),
@@ -245,172 +364,17 @@ class AudioSyncDetector:
         except subprocess.TimeoutExpired:
             raise AudioSyncError("Audio extraction timed out")
 
-    def _load_audio_data(self, audio_path: Path) -> Tuple[np.ndarray, int]:
-        """Load audio data from file.
+    def _detect_audio_peaks(self, audio_path: Path) -> List[float]:
+        """Detect audio peaks and transients in audio file.
+
+        Uses either librosa onset detection or FFmpeg-based peak detection
+        depending on the configured method and available libraries.
 
         Args:
             audio_path: Path to audio file.
 
         Returns:
-            Tuple of (audio_samples, sample_rate).
-        """
-        if self._librosa_available:
-            import librosa
-            audio, sr = librosa.load(str(audio_path), sr=None, mono=True)
-            return audio, sr
-
-        # Fallback: use FFmpeg to extract raw samples
-        command = [
-            get_ffmpeg_path(),
-            "-i", str(audio_path),
-            "-f", "f32le",
-            "-acodec", "pcm_f32le",
-            "-ac", "1",
-            "-ar", "48000",
-            "pipe:1"
-        ]
-
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            timeout=300
-        )
-
-        if result.returncode != 0:
-            raise AudioSyncError("Failed to load audio data")
-
-        audio = np.frombuffer(result.stdout, dtype=np.float32)
-        return audio, 48000
-
-    def get_waveform_info(self, audio_path: Path) -> AudioWaveformInfo:
-        """Analyze audio waveform characteristics.
-
-        Args:
-            audio_path: Path to audio file.
-
-        Returns:
-            AudioWaveformInfo with waveform characteristics.
-        """
-        audio_path = Path(audio_path)
-        if not audio_path.exists():
-            raise AudioSyncError(f"Audio file not found: {audio_path}")
-
-        # Get basic info via ffprobe
-        command = [
-            get_ffprobe_path(), "-v", "quiet",
-            "-print_format", "json",
-            "-show_format", "-show_streams",
-            str(audio_path)
-        ]
-
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-
-        if result.returncode != 0:
-            raise AudioSyncError(f"ffprobe failed: {result.stderr}")
-
-        info = json.loads(result.stdout)
-
-        # Find audio stream
-        audio_stream = None
-        for stream in info.get("streams", []):
-            if stream.get("codec_type") == "audio":
-                audio_stream = stream
-                break
-
-        if not audio_stream:
-            raise AudioSyncError("No audio stream found")
-
-        sample_rate = int(audio_stream.get("sample_rate", 48000))
-        channels = int(audio_stream.get("channels", 2))
-        duration = float(info.get("format", {}).get("duration", 0))
-        bit_depth = audio_stream.get("bits_per_sample")
-
-        # Load audio for peak detection
-        audio, sr = self._load_audio_data(audio_path)
-
-        # Detect peaks (local maxima above threshold)
-        threshold = np.std(audio) * 2
-        peak_positions = self._find_peaks(audio, threshold, min_distance=int(sr * 0.05))
-
-        # Calculate RMS levels in windows
-        window_size = int(sr * 0.1)  # 100ms windows
-        rms_levels = []
-        for i in range(0, len(audio) - window_size, window_size):
-            window = audio[i:i + window_size]
-            rms = np.sqrt(np.mean(window ** 2))
-            rms_levels.append(float(rms))
-
-        return AudioWaveformInfo(
-            sample_rate=sr,
-            duration=duration,
-            peak_positions=peak_positions,
-            rms_levels=rms_levels,
-            channels=channels,
-            bit_depth=int(bit_depth) if bit_depth else None
-        )
-
-    def _find_peaks(
-        self,
-        signal: np.ndarray,
-        threshold: float,
-        min_distance: int
-    ) -> List[int]:
-        """Find peaks in signal above threshold.
-
-        Args:
-            signal: Input signal.
-            threshold: Minimum peak height.
-            min_distance: Minimum samples between peaks.
-
-        Returns:
-            List of peak positions.
-        """
-        if self._scipy_available:
-            from scipy.signal import find_peaks as scipy_find_peaks
-            peaks, _ = scipy_find_peaks(
-                np.abs(signal),
-                height=threshold,
-                distance=min_distance
-            )
-            return peaks.tolist()
-
-        # Basic peak finding
-        peaks = []
-        last_peak = -min_distance
-
-        for i in range(1, len(signal) - 1):
-            if i - last_peak < min_distance:
-                continue
-
-            val = abs(signal[i])
-            if val > threshold:
-                if val > abs(signal[i - 1]) and val > abs(signal[i + 1]):
-                    peaks.append(i)
-                    last_peak = i
-
-        return peaks
-
-    def detect_audio_events(
-        self,
-        audio_path: Path,
-        method: str = "onset"
-    ) -> List[float]:
-        """Detect audio events (onsets/transients) in audio file.
-
-        Uses onset detection to find transients, beats, and speech onset
-        points that can be correlated with visual events.
-
-        Args:
-            audio_path: Path to audio file.
-            method: Detection method ("onset", "beat", "speech").
-
-        Returns:
-            List of event timestamps in seconds.
+            List of peak timestamps in seconds.
 
         Raises:
             AudioSyncError: If detection fails.
@@ -419,79 +383,45 @@ class AudioSyncDetector:
         if not audio_path.exists():
             raise AudioSyncError(f"Audio file not found: {audio_path}")
 
-        logger.info(f"Detecting audio events in {audio_path} (method: {method})")
+        logger.info(f"Detecting audio peaks in {audio_path}")
 
-        if self._librosa_available:
-            return self._detect_events_librosa(audio_path, method)
+        if self.config.detection_method == "onset_detection" and self._librosa_available:
+            return self._detect_peaks_librosa(audio_path)
         else:
-            return self._detect_events_ffmpeg(audio_path, method)
+            return self._detect_peaks_ffmpeg(audio_path)
 
-    def _detect_events_librosa(
-        self,
-        audio_path: Path,
-        method: str
-    ) -> List[float]:
-        """Detect audio events using librosa.
+    def _detect_peaks_librosa(self, audio_path: Path) -> List[float]:
+        """Detect audio peaks using librosa onset detection.
 
         Args:
             audio_path: Path to audio file.
-            method: Detection method.
 
         Returns:
-            List of event timestamps.
+            List of peak timestamps.
         """
         import librosa
 
         # Load audio
         y, sr = librosa.load(str(audio_path), sr=None, mono=True)
 
-        if method == "beat":
-            # Beat detection
-            tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
-            events = librosa.frames_to_time(beat_frames, sr=sr)
+        # Onset detection
+        onset_frames = librosa.onset.onset_detect(y=y, sr=sr, units='frames')
+        events = librosa.frames_to_time(onset_frames, sr=sr)
 
-        elif method == "speech":
-            # Speech onset using spectral flux + high-frequency energy
-            onset_env = librosa.onset.onset_strength(y=y, sr=sr)
-
-            # Focus on speech frequencies (300-3000 Hz)
-            stft = librosa.stft(y)
-            freqs = librosa.fft_frequencies(sr=sr)
-            speech_mask = (freqs >= 300) & (freqs <= 3000)
-            speech_energy = np.sum(np.abs(stft[speech_mask, :]), axis=0)
-
-            # Combine onset strength with speech energy
-            combined = onset_env * (speech_energy / np.max(speech_energy) + 0.5)
-
-            # Peak picking
-            onset_frames = librosa.onset.onset_detect(
-                onset_envelope=combined,
-                sr=sr,
-                units='frames'
-            )
-            events = librosa.frames_to_time(onset_frames, sr=sr)
-
-        else:  # "onset" (default)
-            # General onset detection
-            onset_frames = librosa.onset.onset_detect(y=y, sr=sr, units='frames')
-            events = librosa.frames_to_time(onset_frames, sr=sr)
-
-        logger.info(f"Detected {len(events)} audio events")
+        logger.info(f"Detected {len(events)} audio peaks (librosa)")
         return events.tolist()
 
-    def _detect_events_ffmpeg(
-        self,
-        audio_path: Path,
-        method: str
-    ) -> List[float]:
-        """Detect audio events using FFmpeg silencedetect filter.
+    def _detect_peaks_ffmpeg(self, audio_path: Path) -> List[float]:
+        """Detect audio peaks using FFmpeg silencedetect filter.
+
+        Falls back to this when librosa is not available. Uses silence
+        boundaries as proxy for audio events.
 
         Args:
             audio_path: Path to audio file.
-            method: Detection method (simplified with FFmpeg).
 
         Returns:
-            List of event timestamps.
+            List of peak timestamps.
         """
         # Use silencedetect to find non-silent segments (onsets)
         command = [
@@ -512,7 +442,6 @@ class AudioSyncDetector:
         events = []
         for line in result.stderr.split('\n'):
             if 'silence_end' in line:
-                # Parse: [silencedetect @ ...] silence_end: 1.234
                 try:
                     parts = line.split('silence_end:')
                     if len(parts) > 1:
@@ -525,22 +454,93 @@ class AudioSyncDetector:
         if events and events[0] > 0.1:
             events.insert(0, 0.0)
 
-        logger.info(f"Detected {len(events)} audio events (FFmpeg)")
+        # If too few events, use volume-based peak detection
+        if len(events) < 10:
+            volume_events = self._detect_volume_peaks(audio_path)
+            events.extend(volume_events)
+            events = sorted(set(events))
+
+        logger.info(f"Detected {len(events)} audio peaks (FFmpeg)")
         return events
 
-    def detect_visual_events(
-        self,
-        video_path: Path,
-        method: str = "motion"
-    ) -> List[float]:
-        """Detect visual events (motion peaks/scene changes) in video.
+    def _detect_volume_peaks(self, audio_path: Path) -> List[float]:
+        """Detect volume peaks using FFmpeg volumedetect.
 
-        Uses motion analysis to find visual events that can be correlated
-        with audio events for sync detection.
+        Analyzes audio volume over time to find significant peaks.
+
+        Args:
+            audio_path: Path to audio file.
+
+        Returns:
+            List of peak timestamps.
+        """
+        if not NUMPY_AVAILABLE:
+            return []
+
+        # Extract raw audio samples
+        command = [
+            get_ffmpeg_path(),
+            "-i", str(audio_path),
+            "-f", "f32le",
+            "-acodec", "pcm_f32le",
+            "-ac", "1",
+            "-ar", "8000",  # Lower sample rate for faster processing
+            "pipe:1"
+        ]
+
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                timeout=300
+            )
+
+            if result.returncode != 0:
+                return []
+
+            audio = np.frombuffer(result.stdout, dtype=np.float32)
+            sr = 8000
+
+            # Calculate envelope
+            window_size = int(sr * 0.05)  # 50ms windows
+            envelope = []
+            times = []
+
+            for i in range(0, len(audio) - window_size, window_size):
+                window = audio[i:i + window_size]
+                envelope.append(np.sqrt(np.mean(window ** 2)))
+                times.append(i / sr)
+
+            if not envelope:
+                return []
+
+            envelope = np.array(envelope)
+            threshold = np.mean(envelope) + np.std(envelope) * 1.5
+
+            # Find peaks above threshold
+            peaks = []
+            min_distance = int(0.2 / (window_size / sr))  # 200ms minimum
+
+            for i in range(1, len(envelope) - 1):
+                if envelope[i] > threshold:
+                    if envelope[i] > envelope[i-1] and envelope[i] > envelope[i+1]:
+                        if not peaks or (i - peaks[-1]) >= min_distance:
+                            peaks.append(i)
+
+            return [times[p] for p in peaks]
+
+        except Exception as e:
+            logger.warning(f"Volume peak detection failed: {e}")
+            return []
+
+    def _detect_video_events(self, video_path: Path) -> List[float]:
+        """Detect video events (scene changes, motion peaks).
+
+        Uses FFmpeg scene detection and motion analysis to find
+        visual events that can correlate with audio.
 
         Args:
             video_path: Path to video file.
-            method: Detection method ("motion", "scene", "both").
 
         Returns:
             List of event timestamps in seconds.
@@ -552,19 +552,17 @@ class AudioSyncDetector:
         if not video_path.exists():
             raise AudioSyncError(f"Video file not found: {video_path}")
 
-        logger.info(f"Detecting visual events in {video_path} (method: {method})")
+        logger.info(f"Detecting video events in {video_path}")
 
         events = []
 
-        if method in ("scene", "both"):
-            # Scene change detection using FFmpeg
-            scene_events = self._detect_scene_changes(video_path)
-            events.extend(scene_events)
+        # Scene change detection using FFmpeg
+        scene_events = self._detect_scene_changes(video_path)
+        events.extend(scene_events)
 
-        if method in ("motion", "both"):
-            # Motion peak detection
-            motion_events = self._detect_motion_peaks(video_path)
-            events.extend(motion_events)
+        # Motion peak detection
+        motion_events = self._detect_motion_peaks(video_path)
+        events.extend(motion_events)
 
         # Sort and remove duplicates (within 0.1s tolerance)
         events = sorted(set(events))
@@ -575,7 +573,7 @@ class AudioSyncDetector:
                     filtered.append(e)
             events = filtered
 
-        logger.info(f"Detected {len(events)} visual events")
+        logger.info(f"Detected {len(events)} video events")
         return events
 
     def _detect_scene_changes(self, video_path: Path) -> List[float]:
@@ -594,18 +592,21 @@ class AudioSyncDetector:
             "-f", "null", "-"
         ]
 
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=600
-        )
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=600
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning("Scene detection timed out")
+            return []
 
         events = []
         for line in result.stderr.split('\n'):
             if 'pts_time' in line:
                 try:
-                    # Parse: [Parsed_showinfo...] ... pts_time:1.234567
                     parts = line.split('pts_time:')
                     if len(parts) > 1:
                         time_str = parts[1].strip().split()[0]
@@ -618,22 +619,15 @@ class AudioSyncDetector:
     def _detect_motion_peaks(self, video_path: Path) -> List[float]:
         """Detect motion peaks in video using frame differencing.
 
+        Uses a lower threshold than scene detection to capture
+        more subtle motion events.
+
         Args:
             video_path: Path to video file.
 
         Returns:
             List of motion peak timestamps.
         """
-        # Use FFmpeg to extract motion data
-        command = [
-            get_ffmpeg_path(),
-            "-i", str(video_path),
-            "-vf", "mestimate=epzs,codecview=mv=pf+bf+bb",
-            "-f", "null", "-"
-        ]
-
-        # For simpler approach, use frame difference magnitude
-        # This is a simplified implementation using select filter
         command = [
             get_ffmpeg_path(),
             "-i", str(video_path),
@@ -641,12 +635,16 @@ class AudioSyncDetector:
             "-f", "null", "-"
         ]
 
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=600
-        )
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=600
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning("Motion detection timed out")
+            return []
 
         events = []
         for line in result.stderr.split('\n'):
@@ -661,49 +659,49 @@ class AudioSyncDetector:
 
         return events
 
-    def calculate_offset(
+    def _calculate_drift(
         self,
         audio_events: List[float],
-        visual_events: List[float],
-        max_offset_ms: float = 2000.0
+        video_events: List[float]
     ) -> Tuple[float, float]:
-        """Calculate optimal offset between audio and visual events.
+        """Calculate drift between audio and video events.
 
         Uses cross-correlation to find the offset that best aligns
         audio and visual events.
 
         Args:
             audio_events: List of audio event timestamps (seconds).
-            visual_events: List of visual event timestamps (seconds).
-            max_offset_ms: Maximum offset to search (milliseconds).
+            video_events: List of video event timestamps (seconds).
 
         Returns:
-            Tuple of (offset_ms, correlation_score).
-            Positive offset means audio leads video.
+            Tuple of (drift_ms, confidence).
+            Positive drift means audio leads video.
         """
-        if not audio_events or not visual_events:
-            logger.warning("Insufficient events for offset calculation")
+        if not audio_events or not video_events:
+            logger.warning("Insufficient events for drift calculation")
             return 0.0, 0.0
 
         logger.info(
-            f"Calculating offset from {len(audio_events)} audio and "
-            f"{len(visual_events)} visual events"
+            f"Calculating drift from {len(audio_events)} audio and "
+            f"{len(video_events)} video events"
         )
+
+        if not NUMPY_AVAILABLE:
+            return self._calculate_drift_basic(audio_events, video_events)
 
         # Convert to numpy arrays
         audio = np.array(audio_events)
-        visual = np.array(visual_events)
+        video = np.array(video_events)
 
         # Search range
-        max_offset_s = max_offset_ms / 1000.0
+        max_offset_s = self.config.max_drift_ms / 1000.0
         step_s = 0.001  # 1ms resolution
         offsets = np.arange(-max_offset_s, max_offset_s, step_s)
 
         best_offset = 0.0
         best_score = 0.0
 
-        # For each offset, count how many audio events are within tolerance
-        # of a visual event
+        # For each offset, count how many audio events match video events
         tolerance = 0.05  # 50ms tolerance for matching
 
         for offset in offsets:
@@ -711,10 +709,9 @@ class AudioSyncDetector:
             matches = 0
 
             for a_time in shifted_audio:
-                # Find closest visual event
-                if len(visual) > 0:
-                    closest_idx = np.argmin(np.abs(visual - a_time))
-                    if np.abs(visual[closest_idx] - a_time) < tolerance:
+                if len(video) > 0:
+                    closest_idx = np.argmin(np.abs(video - a_time))
+                    if np.abs(video[closest_idx] - a_time) < tolerance:
                         matches += 1
 
             # Normalize score
@@ -725,178 +722,167 @@ class AudioSyncDetector:
                 best_offset = offset
 
         # Convert to milliseconds
-        offset_ms = best_offset * 1000.0
+        drift_ms = best_offset * 1000.0
 
         logger.info(
-            f"Best offset: {offset_ms:.1f}ms "
-            f"(correlation score: {best_score:.3f})"
+            f"Best drift: {drift_ms:.1f}ms "
+            f"(confidence: {best_score:.3f})"
         )
 
-        return offset_ms, best_score
+        return drift_ms, best_score
 
-    def analyze_sync(
-        self,
-        video_path: Path,
-        audio_path: Optional[Path] = None,
-        progress_callback: Optional[Callable[[str], None]] = None
-    ) -> SyncAnalysis:
-        """Perform comprehensive audio-video sync analysis.
-
-        Analyzes both audio and video to detect sync issues including
-        constant offset and drift over time.
-
-        Args:
-            video_path: Path to video file.
-            audio_path: Path to separate audio file (uses video's audio if None).
-            progress_callback: Optional progress callback.
-
-        Returns:
-            SyncAnalysis with detailed sync information.
-
-        Raises:
-            AudioSyncError: If analysis fails.
-        """
-        video_path = Path(video_path)
-        if not video_path.exists():
-            raise AudioSyncError(f"Video file not found: {video_path}")
-
-        logger.info(f"Analyzing sync for: {video_path}")
-
-        if progress_callback:
-            progress_callback("Extracting audio events...")
-
-        # Use video's audio if no separate audio file
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-
-            if audio_path is None:
-                audio_path = temp_path / "extracted_audio.wav"
-                self._extract_audio_to_wav(video_path, audio_path)
-
-            if progress_callback:
-                progress_callback("Detecting audio events...")
-
-            # Detect audio events
-            audio_events = self.detect_audio_events(audio_path)
-
-            if progress_callback:
-                progress_callback("Detecting visual events...")
-
-            # Detect visual events
-            visual_events = self.detect_visual_events(video_path, method="both")
-
-            if progress_callback:
-                progress_callback("Calculating offset...")
-
-            # Calculate offset
-            offset_ms, correlation = self.calculate_offset(audio_events, visual_events)
-
-            # Analyze drift by comparing first and second halves
-            drift_per_minute = 0.0
-            if len(audio_events) > 10 and len(visual_events) > 10:
-                drift_per_minute = self._analyze_drift(
-                    audio_events, visual_events, audio_path
-                )
-
-            # Determine confidence
-            confidence = correlation
-            if len(audio_events) < 5 or len(visual_events) < 5:
-                confidence *= 0.5  # Low event count reduces confidence
-
-            # Determine if correction is needed
-            needs_correction = (
-                abs(offset_ms) > self.SYNC_THRESHOLD_MS or
-                abs(drift_per_minute) > self.DRIFT_THRESHOLD_MS_PER_MIN
-            ) and confidence >= self.MIN_CONFIDENCE
-
-            if progress_callback:
-                progress_callback("Analysis complete")
-
-            return SyncAnalysis(
-                offset_ms=offset_ms,
-                confidence=confidence,
-                drift_per_minute_ms=drift_per_minute,
-                needs_correction=needs_correction,
-                audio_events_count=len(audio_events),
-                visual_events_count=len(visual_events),
-                correlation_score=correlation,
-                analysis_method="cross-correlation"
-            )
-
-    def _analyze_drift(
+    def _calculate_drift_basic(
         self,
         audio_events: List[float],
-        visual_events: List[float],
-        audio_path: Path
-    ) -> float:
-        """Analyze sync drift over time.
+        video_events: List[float]
+    ) -> Tuple[float, float]:
+        """Calculate drift without numpy (basic implementation).
 
-        Compares offset in first and second half of content to detect
-        progressive sync loss.
+        Args:
+            audio_events: List of audio event timestamps.
+            video_events: List of video event timestamps.
+
+        Returns:
+            Tuple of (drift_ms, confidence).
+        """
+        max_offset_s = self.config.max_drift_ms / 1000.0
+        step_s = 0.005  # 5ms resolution for basic method
+        tolerance = 0.05
+
+        best_offset = 0.0
+        best_score = 0.0
+
+        offset = -max_offset_s
+        while offset <= max_offset_s:
+            matches = 0
+
+            for a_time in audio_events:
+                shifted = a_time + offset
+                for v_time in video_events:
+                    if abs(shifted - v_time) < tolerance:
+                        matches += 1
+                        break
+
+            score = matches / max(len(audio_events), 1)
+
+            if score > best_score:
+                best_score = score
+                best_offset = offset
+
+            offset += step_s
+
+        return best_offset * 1000.0, best_score
+
+    def _check_progressive_drift(
+        self,
+        audio_events: List[float],
+        video_events: List[float],
+        audio_path: Path
+    ) -> bool:
+        """Check if drift is progressive (increases over time).
+
+        Compares drift in first and second halves of content to
+        detect clock mismatch or progressive sync loss.
 
         Args:
             audio_events: Audio event timestamps.
-            visual_events: Visual event timestamps.
+            video_events: Video event timestamps.
             audio_path: Path to audio file for duration.
 
         Returns:
-            Drift rate in milliseconds per minute.
+            True if drift is progressive.
         """
+        if len(audio_events) < 10 or len(video_events) < 10:
+            return False
+
         # Get audio duration
         try:
-            waveform_info = self.get_waveform_info(audio_path)
-            duration = waveform_info.duration
+            duration = self._get_duration(audio_path)
         except Exception:
-            duration = max(max(audio_events), max(visual_events))
+            duration = max(
+                max(audio_events) if audio_events else 0,
+                max(video_events) if video_events else 0
+            )
+
+        if duration <= 0:
+            return False
 
         midpoint = duration / 2
 
         # Split events
         audio_first = [e for e in audio_events if e < midpoint]
         audio_second = [e for e in audio_events if e >= midpoint]
-        visual_first = [e for e in visual_events if e < midpoint]
-        visual_second = [e for e in visual_events if e >= midpoint]
+        video_first = [e for e in video_events if e < midpoint]
+        video_second = [e for e in video_events if e >= midpoint]
 
-        # Calculate offset for each half
-        offset_first, _ = self.calculate_offset(audio_first, visual_first)
-        offset_second, _ = self.calculate_offset(audio_second, visual_second)
+        # Calculate drift for each half
+        drift_first, _ = self._calculate_drift(audio_first, video_first)
+        drift_second, _ = self._calculate_drift(audio_second, video_second)
 
-        # Calculate drift rate
-        if duration > 0:
-            drift_total = offset_second - offset_first
-            drift_per_minute = (drift_total / duration) * 60
-        else:
-            drift_per_minute = 0.0
+        # Check if drift increased significantly
+        drift_change = abs(drift_second - drift_first)
+        is_progressive = drift_change > 20.0  # 20ms threshold
 
         logger.info(
-            f"Drift analysis: first half={offset_first:.1f}ms, "
-            f"second half={offset_second:.1f}ms, "
-            f"drift={drift_per_minute:.2f}ms/min"
+            f"Drift analysis: first half={drift_first:.1f}ms, "
+            f"second half={drift_second:.1f}ms, "
+            f"progressive={is_progressive}"
         )
 
-        return drift_per_minute
+        return is_progressive
+
+    def _get_duration(self, file_path: Path) -> float:
+        """Get media duration in seconds."""
+        command = [
+            get_ffprobe_path(), "-v", "quiet",
+            "-print_format", "json",
+            "-show_format",
+            str(file_path)
+        ]
+
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+
+        info = json.loads(result.stdout)
+        return float(info.get("format", {}).get("duration", 0))
 
 
 class AudioSyncCorrector:
     """Corrects audio-video synchronization issues.
 
-    Applies micro-adjustments to audio timing, handles time stretching
+    Applies timing adjustments to audio, handles time stretching
     for duration matching, and preserves audio quality during correction.
 
     Example:
         >>> corrector = AudioSyncCorrector()
-        >>> correction = corrector.correct_sync(
-        ...     Path("audio.wav"),
-        ...     offset_ms=-100  # Audio 100ms late
+        >>> analysis = SyncAnalysis(
+        ...     drift_ms=-100,
+        ...     drift_direction="video_ahead",
+        ...     confidence=0.85,
+        ...     samples_analyzed=50,
+        ...     is_progressive=False
         ... )
-        >>> print(f"Corrected audio: {correction.output_path}")
+        >>> output = corrector.correct_sync(
+        ...     Path("video.mp4"),
+        ...     analysis,
+        ...     Path("output.mp4")
+        ... )
     """
 
     # Maximum stretch factor before quality concerns
     MAX_STRETCH_FACTOR = 1.05  # 5% stretch/compress
 
-    def __init__(self) -> None:
-        """Initialize the sync corrector."""
+    def __init__(self, config: Optional[SyncConfig] = None) -> None:
+        """Initialize the sync corrector.
+
+        Args:
+            config: Optional SyncConfig for customizing correction.
+        """
+        self.config = config or SyncConfig()
         self._verify_ffmpeg()
         self._rubberband_available = self._check_rubberband()
 
@@ -932,81 +918,148 @@ class AudioSyncCorrector:
         )
         return "rubberband" in result.stdout
 
-    def _validate_input(self, audio_path: Path) -> None:
-        """Validate input file exists."""
-        if not audio_path.exists():
-            raise AudioSyncError(f"Audio file not found: {audio_path}")
-
-    def _get_audio_duration(self, audio_path: Path) -> float:
-        """Get audio duration in seconds."""
-        command = [
-            get_ffprobe_path(), "-v", "quiet",
-            "-print_format", "json",
-            "-show_format",
-            str(audio_path)
-        ]
-
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-
-        info = json.loads(result.stdout)
-        return float(info.get("format", {}).get("duration", 0))
-
     def correct_sync(
         self,
-        audio_path: Path,
-        offset_ms: float,
-        output_path: Optional[Path] = None,
+        video_path: Path,
+        analysis: SyncAnalysis,
+        output_path: Path,
         progress_callback: Optional[Callable[[str], None]] = None
     ) -> Path:
-        """Apply offset correction to audio.
+        """Apply sync correction to video based on analysis.
 
-        Shifts audio timing by adding silence (positive offset) or
-        trimming beginning (negative offset).
+        Corrects audio-video synchronization by adjusting audio timing
+        according to the detected drift.
+
+        Args:
+            video_path: Path to input video file.
+            analysis: SyncAnalysis from AudioSyncAnalyzer.
+            output_path: Path for output corrected video.
+            progress_callback: Optional callback for progress updates.
+
+        Returns:
+            Path to corrected video file.
+
+        Raises:
+            AudioSyncError: If correction fails or drift exceeds limits.
+        """
+        video_path = Path(video_path)
+        output_path = Path(output_path)
+
+        if not video_path.exists():
+            raise AudioSyncError(f"Video file not found: {video_path}")
+
+        # Check if drift exceeds maximum
+        if abs(analysis.drift_ms) > self.config.max_drift_ms:
+            raise AudioSyncError(
+                f"Drift ({analysis.drift_ms}ms) exceeds maximum "
+                f"({self.config.max_drift_ms}ms)"
+            )
+
+        if not analysis.needs_correction:
+            logger.info("No sync correction needed according to analysis")
+            shutil.copy2(video_path, output_path)
+            return output_path
+
+        logger.info(
+            f"Applying sync correction: {analysis.drift_ms}ms "
+            f"({analysis.drift_direction})"
+        )
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+
+            if progress_callback:
+                progress_callback("Extracting audio...")
+
+            # Extract audio
+            audio_path = temp_path / "original_audio.wav"
+            self._extract_audio(video_path, audio_path)
+
+            if progress_callback:
+                progress_callback(f"Adjusting audio timing ({analysis.drift_ms}ms)...")
+
+            # Adjust audio timing based on correction method
+            adjusted_audio = temp_path / "adjusted_audio.wav"
+
+            if self.config.correction_method == "resample":
+                self._resample_audio(
+                    audio_path,
+                    analysis.drift_ms,
+                    adjusted_audio
+                )
+            elif self.config.correction_method == "frame_shift":
+                self._adjust_audio_timing(
+                    audio_path,
+                    analysis.drift_ms,
+                    adjusted_audio
+                )
+            else:  # pts_adjust
+                self._adjust_audio_timing(
+                    audio_path,
+                    analysis.drift_ms,
+                    adjusted_audio
+                )
+
+            if progress_callback:
+                progress_callback("Remuxing video...")
+
+            # Remux video with adjusted audio
+            self._remux_video(video_path, adjusted_audio, output_path)
+
+        logger.info(f"Sync correction complete: {output_path}")
+        return output_path
+
+    def _extract_audio(self, video_path: Path, output_path: Path) -> None:
+        """Extract audio from video file."""
+        command = [
+            get_ffmpeg_path(), "-y",
+            "-i", str(video_path),
+            "-vn",
+            "-acodec", "pcm_s16le",
+            "-ar", "48000",
+            str(output_path)
+        ]
+
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+            if result.returncode != 0:
+                raise AudioSyncError(f"Audio extraction failed: {result.stderr}")
+        except subprocess.TimeoutExpired:
+            raise AudioSyncError("Audio extraction timed out")
+
+    def _adjust_audio_timing(
+        self,
+        audio_path: Path,
+        drift_ms: float,
+        output_path: Path
+    ) -> None:
+        """Adjust audio timing by adding delay or trimming.
 
         Args:
             audio_path: Path to input audio file.
-            offset_ms: Offset to apply in milliseconds.
-                Positive = audio leads (add delay to start)
+            drift_ms: Drift to correct in milliseconds.
+                Positive = audio leads (add delay)
                 Negative = audio lags (trim start)
-            output_path: Path for output file (auto-generated if None).
-            progress_callback: Optional progress callback.
-
-        Returns:
-            Path to corrected audio file.
-
-        Raises:
-            AudioSyncError: If correction fails.
+            output_path: Path for output audio file.
         """
-        audio_path = Path(audio_path)
-        self._validate_input(audio_path)
-
-        if output_path is None:
-            output_path = audio_path.parent / f"{audio_path.stem}_synced{audio_path.suffix}"
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        logger.info(f"Applying sync correction: {offset_ms}ms offset")
-
-        if progress_callback:
-            progress_callback(f"Applying {offset_ms}ms offset...")
-
-        if abs(offset_ms) < 1:
-            # No significant correction needed
+        if abs(drift_ms) < 1:
             shutil.copy2(audio_path, output_path)
-            return output_path
+            return
 
-        if offset_ms > 0:
+        if drift_ms > 0:
             # Audio leads video - add delay at start
-            delay_samples = int(offset_ms)  # adelay uses milliseconds
+            delay_samples = int(drift_ms)
             filter_str = f"adelay={delay_samples}|{delay_samples}"
         else:
             # Audio lags video - trim from start
-            trim_seconds = abs(offset_ms) / 1000.0
+            trim_seconds = abs(drift_ms) / 1000.0
             filter_str = f"atrim=start={trim_seconds}"
 
         command = [
@@ -1025,195 +1078,51 @@ class AudioSyncCorrector:
                 timeout=300
             )
             if result.returncode != 0:
-                raise AudioSyncError(f"Sync correction failed: {result.stderr}")
+                raise AudioSyncError(f"Audio timing adjustment failed: {result.stderr}")
         except subprocess.TimeoutExpired:
-            raise AudioSyncError("Sync correction timed out")
+            raise AudioSyncError("Audio timing adjustment timed out")
 
-        logger.info(f"Sync correction applied: {output_path}")
-        return output_path
-
-    def adjust_for_interpolation(
+    def _resample_audio(
         self,
         audio_path: Path,
-        source_fps: float,
-        target_fps: float,
-        output_path: Optional[Path] = None,
-        high_quality: bool = True,
-        progress_callback: Optional[Callable[[str], None]] = None
-    ) -> Path:
-        """Adjust audio duration for frame interpolation.
+        drift_ms: float,
+        output_path: Path
+    ) -> None:
+        """Resample audio to correct drift using time stretching.
 
-        When video is interpolated from source_fps to target_fps, the video
-        duration changes. This method adjusts audio to match.
+        Uses time stretching to subtly adjust audio speed to match
+        video timing. Preserves pitch where possible.
 
         Args:
             audio_path: Path to input audio file.
-            source_fps: Original video frame rate.
-            target_fps: Target video frame rate after interpolation.
-            output_path: Path for output file (auto-generated if None).
-            high_quality: Use rubberband for quality (if available).
-            progress_callback: Optional progress callback.
-
-        Returns:
-            Path to adjusted audio file.
-
-        Raises:
-            AudioSyncError: If adjustment fails.
-
-        Note:
-            Frame interpolation itself doesn't change video duration (it adds
-            frames but keeps the same total time). This method is for cases
-            where the interpolation process somehow affects duration (e.g.,
-            frame dropping during decimation to exact target fps).
+            drift_ms: Drift to correct in milliseconds.
+            output_path: Path for output audio file.
         """
-        audio_path = Path(audio_path)
-        self._validate_input(audio_path)
+        # Get audio duration
+        duration = self._get_duration(audio_path)
 
-        if output_path is None:
-            output_path = audio_path.parent / f"{audio_path.stem}_adjusted{audio_path.suffix}"
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Frame interpolation typically doesn't change duration, but
-        # decimation during fps conversion can. Calculate stretch factor.
-        # If source had N frames at source_fps, duration = N/source_fps
-        # After interpolation to target_fps with exact frame count target,
-        # we may need slight adjustment.
-
-        # For most interpolation cases, no duration change is needed
-        if abs(source_fps - target_fps) < 0.01:
+        if duration <= 0:
             shutil.copy2(audio_path, output_path)
-            return output_path
+            return
 
-        original_duration = self._get_audio_duration(audio_path)
+        # Calculate stretch factor
+        # If audio leads (positive drift), we need to slow it down slightly
+        # If audio lags (negative drift), we need to speed it up slightly
+        drift_seconds = drift_ms / 1000.0
+        target_duration = duration + drift_seconds
+        stretch_factor = target_duration / duration
 
-        # Calculate expected video duration change
-        # This handles cases like 24fps -> 23.976fps conversions
-        duration_ratio = source_fps / target_fps
+        # atempo uses speed factor (inverse of stretch)
+        tempo_factor = 1.0 / stretch_factor
 
-        if abs(duration_ratio - 1.0) < 0.001:
-            # Negligible change
-            shutil.copy2(audio_path, output_path)
-            return output_path
+        logger.info(f"Resampling audio: tempo factor = {tempo_factor:.4f}")
 
-        logger.info(
-            f"Adjusting audio for fps change: {source_fps} -> {target_fps} "
-            f"(ratio: {duration_ratio:.4f})"
-        )
-
-        return self._time_stretch(
-            audio_path,
-            output_path,
-            duration_ratio,
-            high_quality,
-            progress_callback
-        )
-
-    def stretch_to_duration(
-        self,
-        audio_path: Path,
-        target_duration: float,
-        output_path: Optional[Path] = None,
-        high_quality: bool = True,
-        progress_callback: Optional[Callable[[str], None]] = None
-    ) -> SyncCorrection:
-        """Stretch or compress audio to match target duration.
-
-        Uses time-stretching to adjust audio duration while preserving
-        pitch and quality as much as possible.
-
-        Args:
-            audio_path: Path to input audio file.
-            target_duration: Target duration in seconds.
-            output_path: Path for output file (auto-generated if None).
-            high_quality: Use rubberband for quality (if available).
-            progress_callback: Optional progress callback.
-
-        Returns:
-            SyncCorrection with adjustment details.
-
-        Raises:
-            AudioSyncError: If stretch factor exceeds safe limits.
-        """
-        audio_path = Path(audio_path)
-        self._validate_input(audio_path)
-
-        if output_path is None:
-            output_path = audio_path.parent / f"{audio_path.stem}_stretched{audio_path.suffix}"
-        output_path = Path(output_path)
-
-        original_duration = self._get_audio_duration(audio_path)
-
-        if original_duration <= 0:
-            raise AudioSyncError("Could not determine audio duration")
-
-        stretch_factor = target_duration / original_duration
-
-        logger.info(
-            f"Stretching audio: {original_duration:.2f}s -> {target_duration:.2f}s "
-            f"(factor: {stretch_factor:.4f})"
-        )
-
-        # Check stretch limits
-        if stretch_factor > self.MAX_STRETCH_FACTOR or stretch_factor < (1 / self.MAX_STRETCH_FACTOR):
-            logger.warning(
-                f"Stretch factor {stretch_factor:.4f} exceeds recommended range "
-                f"({1/self.MAX_STRETCH_FACTOR:.2f} - {self.MAX_STRETCH_FACTOR:.2f}). "
-                "Audio quality may be affected."
-            )
-
-        if progress_callback:
-            progress_callback(f"Time-stretching audio (factor: {stretch_factor:.3f})...")
-
-        result_path = self._time_stretch(
-            audio_path,
-            output_path,
-            stretch_factor,
-            high_quality,
-            progress_callback
-        )
-
-        # Verify output duration
-        adjusted_duration = self._get_audio_duration(result_path)
-
-        return SyncCorrection(
-            original_duration=original_duration,
-            adjusted_duration=adjusted_duration,
-            stretch_factor=stretch_factor,
-            output_path=str(result_path),
-            quality_preserved=high_quality and abs(stretch_factor - 1.0) < 0.03
-        )
-
-    def _time_stretch(
-        self,
-        audio_path: Path,
-        output_path: Path,
-        stretch_factor: float,
-        high_quality: bool,
-        progress_callback: Optional[Callable[[str], None]] = None
-    ) -> Path:
-        """Apply time stretching to audio.
-
-        Args:
-            audio_path: Input audio path.
-            output_path: Output audio path.
-            stretch_factor: Stretch factor (>1 = slower, <1 = faster).
-            high_quality: Use rubberband if available.
-            progress_callback: Optional progress callback.
-
-        Returns:
-            Path to stretched audio.
-        """
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # atempo range is 0.5 to 2.0, chain multiple for larger changes
-        tempo_factor = 1.0 / stretch_factor  # atempo speeds up, we want stretch
-
-        if high_quality and self._rubberband_available:
-            # Use rubberband for highest quality
+        # Build filter chain
+        if self._rubberband_available and abs(tempo_factor - 1.0) < 0.1:
+            # Use rubberband for high quality on small adjustments
             filter_str = f"rubberband=tempo={tempo_factor}:pitch=1.0"
         else:
-            # Use atempo (may need chaining for extreme values)
+            # Use atempo (may need chaining for large values)
             filter_parts = []
             remaining = tempo_factor
 
@@ -1237,7 +1146,42 @@ class AudioSyncCorrector:
             str(output_path)
         ]
 
-        logger.debug(f"Time stretch command: {' '.join(command)}")
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=600
+            )
+            if result.returncode != 0:
+                raise AudioSyncError(f"Audio resampling failed: {result.stderr}")
+        except subprocess.TimeoutExpired:
+            raise AudioSyncError("Audio resampling timed out")
+
+    def _remux_video(
+        self,
+        video_path: Path,
+        audio_path: Path,
+        output_path: Path
+    ) -> None:
+        """Remux video with new audio track.
+
+        Args:
+            video_path: Path to input video file.
+            audio_path: Path to audio file.
+            output_path: Path for output video file.
+        """
+        command = [
+            get_ffmpeg_path(), "-y",
+            "-i", str(video_path),
+            "-i", str(audio_path),
+            "-map", "0:v",  # Video from first input
+            "-map", "1:a",  # Audio from second input
+            "-c:v", "copy",  # Copy video codec
+            "-c:a", "aac",  # Encode audio as AAC
+            "-b:a", "192k",
+            str(output_path)
+        ]
 
         try:
             result = subprocess.run(
@@ -1247,111 +1191,87 @@ class AudioSyncCorrector:
                 timeout=600
             )
             if result.returncode != 0:
-                raise AudioSyncError(f"Time stretch failed: {result.stderr}")
+                raise AudioSyncError(f"Video remuxing failed: {result.stderr}")
         except subprocess.TimeoutExpired:
-            raise AudioSyncError("Time stretch timed out")
+            raise AudioSyncError("Video remuxing timed out")
 
-        return output_path
+    def _get_duration(self, file_path: Path) -> float:
+        """Get media duration in seconds."""
+        command = [
+            get_ffprobe_path(), "-v", "quiet",
+            "-print_format", "json",
+            "-show_format",
+            str(file_path)
+        ]
 
-    def correct_with_analysis(
-        self,
-        audio_path: Path,
-        analysis: SyncAnalysis,
-        output_path: Optional[Path] = None,
-        progress_callback: Optional[Callable[[str], None]] = None
-    ) -> SyncCorrection:
-        """Apply sync correction based on analysis results.
-
-        Combines offset correction and drift compensation based on
-        the provided SyncAnalysis.
-
-        Args:
-            audio_path: Path to input audio file.
-            analysis: SyncAnalysis from AudioSyncDetector.
-            output_path: Path for output file.
-            progress_callback: Optional progress callback.
-
-        Returns:
-            SyncCorrection with full correction details.
-        """
-        audio_path = Path(audio_path)
-        self._validate_input(audio_path)
-
-        if output_path is None:
-            output_path = audio_path.parent / f"{audio_path.stem}_synced{audio_path.suffix}"
-
-        original_duration = self._get_audio_duration(audio_path)
-
-        if not analysis.needs_correction:
-            logger.info("No sync correction needed according to analysis")
-            shutil.copy2(audio_path, output_path)
-            return SyncCorrection(
-                original_duration=original_duration,
-                adjusted_duration=original_duration,
-                stretch_factor=1.0,
-                offset_applied_ms=0.0,
-                output_path=str(output_path),
-                quality_preserved=True
-            )
-
-        logger.info(
-            f"Applying correction: offset={analysis.offset_ms}ms, "
-            f"drift={analysis.drift_per_minute_ms}ms/min"
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=30
         )
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-            current_path = audio_path
-
-            # Step 1: Apply offset correction
-            if abs(analysis.offset_ms) >= 1:
-                if progress_callback:
-                    progress_callback("Applying offset correction...")
-
-                offset_output = temp_path / "offset_corrected.wav"
-                self.correct_sync(
-                    current_path,
-                    analysis.offset_ms,
-                    offset_output
-                )
-                current_path = offset_output
-
-            # Step 2: Apply drift correction via time stretch
-            if abs(analysis.drift_per_minute_ms) > 0.5:
-                if progress_callback:
-                    progress_callback("Applying drift correction...")
-
-                # Calculate stretch factor from drift
-                total_drift_ms = (analysis.drift_per_minute_ms * original_duration) / 60
-                stretch_factor = (original_duration * 1000) / (original_duration * 1000 + total_drift_ms)
-
-                drift_output = temp_path / "drift_corrected.wav"
-                self._time_stretch(
-                    current_path,
-                    drift_output,
-                    stretch_factor,
-                    high_quality=True
-                )
-                current_path = drift_output
-            else:
-                stretch_factor = 1.0
-
-            # Copy final result
-            shutil.copy2(current_path, output_path)
-
-        adjusted_duration = self._get_audio_duration(output_path)
-
-        return SyncCorrection(
-            original_duration=original_duration,
-            adjusted_duration=adjusted_duration,
-            stretch_factor=stretch_factor,
-            offset_applied_ms=analysis.offset_ms,
-            output_path=str(output_path),
-            quality_preserved=abs(stretch_factor - 1.0) < 0.03
-        )
+        info = json.loads(result.stdout)
+        return float(info.get("format", {}).get("duration", 0))
 
 
-# Convenience functions
+# Legacy class aliases for backward compatibility
+AudioSyncDetector = AudioSyncAnalyzer
+
+
+# Factory functions
+
+def analyze_av_sync(video_path: Path) -> SyncAnalysis:
+    """Analyze audio-visual synchronization for a video file.
+
+    Factory function for quick sync analysis.
+
+    Args:
+        video_path: Path to video file.
+
+    Returns:
+        SyncAnalysis with drift information.
+
+    Example:
+        >>> analysis = analyze_av_sync(Path("video.mp4"))
+        >>> if analysis.needs_correction:
+        ...     print(f"Drift: {analysis.drift_ms}ms ({analysis.drift_direction})")
+    """
+    analyzer = AudioSyncAnalyzer()
+    return analyzer.analyze_sync(Path(video_path))
+
+
+def fix_av_sync(video_path: Path, output_path: Path) -> Path:
+    """Analyze and fix audio-visual synchronization.
+
+    Factory function that analyzes sync issues and applies correction.
+
+    Args:
+        video_path: Path to input video file.
+        output_path: Path for output corrected video.
+
+    Returns:
+        Path to corrected video file.
+
+    Example:
+        >>> corrected = fix_av_sync(
+        ...     Path("input.mp4"),
+        ...     Path("output.mp4")
+        ... )
+        >>> print(f"Corrected video: {corrected}")
+    """
+    analyzer = AudioSyncAnalyzer()
+    analysis = analyzer.analyze_sync(Path(video_path))
+
+    corrector = AudioSyncCorrector()
+    return corrector.correct_sync(
+        Path(video_path),
+        analysis,
+        Path(output_path)
+    )
+
+
+# Legacy convenience functions for backward compatibility
 
 def analyze_audio_sync(
     video_path: Union[str, Path],
@@ -1359,25 +1279,16 @@ def analyze_audio_sync(
 ) -> SyncAnalysis:
     """Analyze audio-video sync for a video file.
 
-    Convenience function for quick sync analysis.
+    Legacy convenience function - wraps analyze_av_sync.
 
     Args:
         video_path: Path to video file.
-        audio_path: Optional path to separate audio file.
+        audio_path: Optional path to separate audio file (ignored, for compatibility).
 
     Returns:
         SyncAnalysis with sync information.
-
-    Example:
-        >>> analysis = analyze_audio_sync("video.mp4")
-        >>> if analysis.needs_correction:
-        ...     print(f"Audio is {analysis.offset_ms}ms out of sync")
     """
-    detector = AudioSyncDetector()
-    return detector.analyze_sync(
-        Path(video_path),
-        Path(audio_path) if audio_path else None
-    )
+    return analyze_av_sync(Path(video_path))
 
 
 def correct_audio_sync(
@@ -1387,7 +1298,7 @@ def correct_audio_sync(
 ) -> Path:
     """Apply sync correction to audio file.
 
-    Convenience function for quick sync correction.
+    Legacy convenience function for direct audio adjustment.
 
     Args:
         audio_path: Path to audio file.
@@ -1396,17 +1307,15 @@ def correct_audio_sync(
 
     Returns:
         Path to corrected audio file.
-
-    Example:
-        >>> corrected = correct_audio_sync("audio.wav", offset_ms=50)
-        >>> print(f"Corrected audio: {corrected}")
     """
+    audio_path = Path(audio_path)
+    if output_path is None:
+        output_path = audio_path.parent / f"{audio_path.stem}_synced{audio_path.suffix}"
+    output_path = Path(output_path)
+
     corrector = AudioSyncCorrector()
-    return corrector.correct_sync(
-        Path(audio_path),
-        offset_ms,
-        Path(output_path) if output_path else None
-    )
+    corrector._adjust_audio_timing(audio_path, offset_ms, output_path)
+    return output_path
 
 
 def sync_audio_to_video(
@@ -1427,25 +1336,34 @@ def sync_audio_to_video(
 
     Returns:
         Tuple of (SyncAnalysis, SyncCorrection or None).
-
-    Example:
-        >>> analysis, correction = sync_audio_to_video(
-        ...     "video.mp4", "audio.wav",
-        ...     auto_correct=True
-        ... )
-        >>> if correction:
-        ...     print(f"Audio corrected to: {correction.output_path}")
     """
-    detector = AudioSyncDetector()
-    analysis = detector.analyze_sync(Path(video_path), Path(audio_path))
+    analyzer = AudioSyncAnalyzer()
+    analysis = analyzer.analyze_sync(Path(video_path))
 
     correction = None
     if auto_correct and analysis.needs_correction:
+        audio_path = Path(audio_path)
+        if output_path is None:
+            output_path = audio_path.parent / f"{audio_path.stem}_synced{audio_path.suffix}"
+
         corrector = AudioSyncCorrector()
-        correction = corrector.correct_with_analysis(
-            Path(audio_path),
-            analysis,
-            Path(output_path) if output_path else None
+        original_duration = corrector._get_duration(audio_path)
+
+        corrector._adjust_audio_timing(
+            audio_path,
+            analysis.drift_ms,
+            Path(output_path)
+        )
+
+        adjusted_duration = corrector._get_duration(Path(output_path))
+
+        correction = SyncCorrection(
+            original_duration=original_duration,
+            adjusted_duration=adjusted_duration,
+            stretch_factor=1.0,
+            offset_applied_ms=analysis.drift_ms,
+            output_path=str(output_path),
+            quality_preserved=True
         )
 
     return analysis, correction
@@ -1454,14 +1372,20 @@ def sync_audio_to_video(
 __all__ = [
     # Exceptions
     "AudioSyncError",
+    # Configuration
+    "SyncConfig",
     # Data classes
-    "AudioWaveformInfo",
     "SyncAnalysis",
     "SyncCorrection",
+    "AudioWaveformInfo",
     # Main classes
-    "AudioSyncDetector",
+    "AudioSyncAnalyzer",
     "AudioSyncCorrector",
-    # Convenience functions
+    "AudioSyncDetector",  # Legacy alias
+    # Factory functions (new)
+    "analyze_av_sync",
+    "fix_av_sync",
+    # Convenience functions (legacy)
     "analyze_audio_sync",
     "correct_audio_sync",
     "sync_audio_to_video",

@@ -152,6 +152,38 @@ class BoundingBox:
         """Return as (x, y, x2, y2) tuple."""
         return (self.x, self.y, self.x2, self.y2)
 
+    def contains(self, other: 'BoundingBox') -> bool:
+        """Check if this bounding box fully contains another.
+
+        Args:
+            other: The bounding box to check containment for
+
+        Returns:
+            True if *other* is fully inside this box
+        """
+        return (
+            self.x <= other.x
+            and self.y <= other.y
+            and self.x2 >= other.x2
+            and self.y2 >= other.y2
+        )
+
+    def contains(self, other: 'BoundingBox') -> bool:
+        """Check if this bounding box fully contains another.
+
+        Args:
+            other: The bounding box to check containment for
+
+        Returns:
+            True if *other* is fully inside this box
+        """
+        return (
+            self.x <= other.x
+            and self.y <= other.y
+            and self.x2 >= other.x2
+            and self.y2 >= other.y2
+        )
+
     def scale(self, factor: float) -> 'BoundingBox':
         """Scale the bounding box by a factor."""
         return BoundingBox(

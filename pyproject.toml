@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "framewright"
-version = "1.4.0"
+version = "1.0.0"
 description = "AI-powered video restoration and enhancement pipeline with web UI"
 readme = "README.md"
 requires-python = ">=3.9"
-license = {text = "MIT"}
+license = {text = "Elastic-2.0"}
 authors = [
     {name = "FrameWright Team"}
 ]
@@ -17,7 +17,7 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Intended Audience :: End Users/Desktop",
-    "License :: OSI Approved :: MIT License",
+    "License :: Other/Proprietary License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
@@ -35,6 +35,8 @@ dependencies = [
     "click>=8.1.0",
     "pyyaml>=6.0.0",
     "argcomplete>=3.0.0",
+    "rich>=13.0.0",
+    "questionary>=2.0.0",
 ]
 
 [project.optional-dependencies]
@@ -69,7 +71,7 @@ watermark = [
 ]
 progress = [
     "rich>=13.0.0",
-    "pynvml>=11.0.0",
+    "nvidia-ml-py>=11.0.0",
 ]
 cloud = [
     "boto3>=1.26.0",
@@ -94,8 +96,10 @@ Repository = "https://github.com/framewright/framewright"
 Issues = "https://github.com/framewright/framewright/issues"
 
 [tool.setuptools]
-packages = ["framewright", "framewright.processors", "framewright.utils", "framewright.cloud", "framewright.benchmarks"]
 package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.setuptools.package-data]
 framewright = ["py.typed"]

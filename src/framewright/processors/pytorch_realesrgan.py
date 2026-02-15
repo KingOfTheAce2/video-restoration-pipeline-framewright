@@ -17,6 +17,16 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# GPU memory optimization
+try:
+    from framewright.utils.gpu_memory_optimizer import GPUMemoryOptimizer
+    _gpu_optimizer = GPUMemoryOptimizer()
+    GPU_OPTIMIZER_AVAILABLE = True
+except ImportError:
+    _gpu_optimizer = None
+    GPU_OPTIMIZER_AVAILABLE = False
+    logger.warning("GPU memory optimizer not available")
+
 # Flag to check if PyTorch Real-ESRGAN is available
 _PYTORCH_ESRGAN_AVAILABLE: Optional[bool] = None
 _UPSAMPLER = None
@@ -189,11 +199,32 @@ def enhance_frame_pytorch(
         if img is None:
             return False, f"Failed to read image: {input_path}"
 
-        # Get upsampler
-        upsampler = get_upsampler(config)
+        # Use GPU memory optimizer if available
+        if GPU_OPTIMIZER_AVAILABLE and _gpu_optimizer:
+            # Get optimal tile size based on available VRAM
+            frame_size = (img.shape[1], img.shape[0])  # (width, height)
+            stats = _gpu_optimizer.get_memory_stats()
 
-        # Enhance
-        output, _ = upsampler.enhance(img, outscale=config.scale_factor)
+            if config.tile_size == 0:  # Auto mode
+                # Use optimizer's recommendation for tile size
+                if stats.available_mb > 8000:
+                    config.tile_size = 0  # No tiling needed
+                elif stats.available_mb > 4000:
+                    config.tile_size = 512
+                elif stats.available_mb > 2000:
+                    config.tile_size = 384
+                else:
+                    config.tile_size = 256
+                logger.debug(f"Auto-selected tile size {config.tile_size} based on {stats.available_mb:.0f}MB VRAM")
+
+            # Process with managed memory context
+            with _gpu_optimizer.managed_memory():
+                upsampler = get_upsampler(config)
+                output, _ = upsampler.enhance(img, outscale=config.scale_factor)
+        else:
+            # Fallback without optimizer
+            upsampler = get_upsampler(config)
+            output, _ = upsampler.enhance(img, outscale=config.scale_factor)
 
         # Save
         cv2.imwrite(str(output_path), output)
@@ -203,8 +234,14 @@ def enhance_frame_pytorch(
 
         return True, None
 
-    except torch.cuda.OutOfMemoryError:
-        return False, "GPU out of memory. Try reducing tile_size or using a smaller model."
+    except torch.cuda.OutOfMemoryError as e:
+        # Clear cache and provide helpful error
+        if _UPSAMPLER is not None:
+            clear_upsampler_cache()
+        return False, (
+            f"GPU out of memory: {e}\n"
+            f"Try: 1) Reduce tile_size, 2) Use smaller model, 3) Close other GPU applications"
+        )
     except Exception as e:
         logger.error(f"PyTorch Real-ESRGAN failed: {e}")
         return False, str(e)

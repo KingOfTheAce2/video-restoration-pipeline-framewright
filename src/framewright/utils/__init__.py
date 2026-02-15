@@ -1,6 +1,17 @@
 """
 FrameWright Utilities Package
-Utility functions and helpers for video processing.
+
+Utility functions and helpers for video processing including:
+- FFmpeg integration
+- GPU memory management and optimization
+- Disk space monitoring
+- Dependency validation
+- Async I/O operations
+- Model management (download, verify, cleanup)
+- Progress tracking and webhooks
+- Job scheduling
+- Power management
+- Output filename templates
 """
 
 from .ffmpeg import (
@@ -159,6 +170,72 @@ from .logging import (
     get_cli_args_parser,
 )
 
+# GPU Memory Optimizer
+from .gpu_memory_optimizer import (
+    GPUMemoryOptimizer,
+    GPUMemoryStats,
+    OptimizationConfig,
+    MemoryPressure,
+    get_optimizer,
+    get_optimal_batch_size,
+    get_optimal_tile_size,
+    clear_gpu_memory,
+)
+
+# Thermal Monitoring
+from .thermal_monitor import (
+    ThermalMonitor,
+    ThermalState,
+    ThrottleState,
+    ThermalReading,
+    ThermalProfile,
+    get_gpu_temperature,
+    is_gpu_throttling,
+)
+
+# Model Manager CLI
+from .model_manager_cli import (
+    ModelManagerCLI,
+    ModelInfo as ModelManagerInfo,
+    ModelCategory,
+)
+
+# Progress Webhook
+from .webhook import (
+    WebhookType,
+    EventType,
+    WebhookConfig,
+    WebhookEvent,
+    ProgressWebhook,
+    WebhookManager,
+)
+
+# Job Scheduler
+from .scheduler import (
+    JobStatus,
+    ScheduleType,
+    JobConstraints,
+    ScheduledJob,
+    JobScheduler,
+)
+
+# Power Management
+from .power_manager import (
+    PowerAction,
+    PowerState,
+    PowerManager,
+    KeepAwake,
+    prevent_sleep_during,
+)
+
+# Output Templates
+from .output_templates import (
+    VideoMetadata,
+    ProcessingContext,
+    OutputTemplate,
+    TemplateManager,
+)
+
 __all__ = [
     # FFmpeg utilities
     'check_ffmpeg_installed',
@@ -289,4 +366,49 @@ __all__ = [
     'ErrorAggregator',
     'configure_from_cli',
     'get_cli_args_parser',
+    # GPU Memory Optimizer
+    'GPUMemoryOptimizer',
+    'GPUMemoryStats',
+    'OptimizationConfig',
+    'MemoryPressure',
+    'get_optimizer',
+    'get_optimal_batch_size',
+    'get_optimal_tile_size',
+    'clear_gpu_memory',
+    # Thermal Monitoring
+    'ThermalMonitor',
+    'ThermalState',
+    'ThrottleState',
+    'ThermalReading',
+    'ThermalProfile',
+    'get_gpu_temperature',
+    'is_gpu_throttling',
+    # Model Manager CLI
+    'ModelManagerCLI',
+    'ModelManagerInfo',
+    'ModelCategory',
+    # Progress Webhook
+    'WebhookType',
+    'EventType',
+    'WebhookConfig',
+    'WebhookEvent',
+    'ProgressWebhook',
+    'WebhookManager',
+    # Job Scheduler
+    'JobStatus',
+    'ScheduleType',
+    'JobConstraints',
+    'ScheduledJob',
+    'JobScheduler',
+    # Power Management
+    'PowerAction',
+    'PowerState',
+    'PowerManager',
+    'KeepAwake',
+    'prevent_sleep_during',
+    # Output Templates
+    'VideoMetadata',
+    'ProcessingContext',
+    'OutputTemplate',
+    'TemplateManager',
 ]

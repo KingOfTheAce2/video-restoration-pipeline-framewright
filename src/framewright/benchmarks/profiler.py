@@ -535,7 +535,12 @@ class ProfileReport:
             recommendations=recommendations,
         )
 
-    def _generate_recommendations(self, bottleneck: StageMetrics) -> List[str]:
+    def _generate_recommendations(
+        self,
+        bottleneck: StageMetrics,
+        peak_memory_mb: float = 0.0,
+        avg_gpu_utilization: float = 0.0,
+    ) -> List[str]:
         """Generate optimization recommendations based on profile data."""
         recommendations = []
 
@@ -574,13 +579,13 @@ class ProfileReport:
             )
 
         # Memory recommendations
-        if self.summary.peak_memory_mb > 16000:
+        if peak_memory_mb > 16000:
             recommendations.append(
                 "High memory usage detected. Consider processing in smaller batches."
             )
 
         # GPU utilization recommendations
-        if self.summary.avg_gpu_utilization < 50:
+        if avg_gpu_utilization < 50:
             recommendations.append(
                 "Low average GPU utilization. Consider batching frames or using larger tile sizes."
             )

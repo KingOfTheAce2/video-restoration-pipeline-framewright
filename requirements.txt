@@ -8,6 +8,18 @@ yt-dlp>=2023.0.0
 tqdm>=4.65.0
 click>=8.1.0
 
+# Rich terminal UI (Apple-quality experience)
+rich>=13.0.0
+
+# Interactive prompts (optional, for wizard mode)
+questionary>=2.0.0
+
+# Shell completion
+argcomplete>=3.0.0
+
+# Configuration file parsing
+pyyaml>=6.0.0
+
 # Note: FFmpeg and ffprobe must be installed separately on the system
 # Installation instructions:
 # - Ubuntu/Debian: sudo apt-get install ffmpeg

@@ -1,16 +1,23 @@
 # ===========================================
-# Claude Code / Claude Flow
+# Claude Code / Claude Flow / MCP
 # ===========================================
 .claude/
+.claude-flow/
 .mcp.json
+.mcp/
 claude-flow
 claude-flow.config.json
 .swarm/
 .hive-mind/
-.claude-flow/
+hive-mind/
 memory/
 coordination/
 hive-mind-prompt-*.txt
+.agents/
+.orchestration/
+*.agent.json
+.flow-nexus/
+.ruv-swarm/
 
 # ===========================================
 # Python
@@ -35,12 +42,15 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+pip-wheel-metadata/
+share/python-wheels/
 
 # Virtual environments
 venv/
 ENV/
 env/
 .venv/
+.env.venv/
 
 # ===========================================
 # FrameWright Project
@@ -52,6 +62,36 @@ output/
 frames/
 enhanced/
 interpolated/
+unique_frames/
+checkpoints/
+.restoration/
+
+# Project files
+*.fwproj
+*.framewright-project/
+
+# ===========================================
+# TensorRT / CUDA
+# ===========================================
+*.engine
+*.plan
+*.trt
+tensorrt_engines/
+.tensorrt_cache/
+
+# ===========================================
+# CoreML / Apple Silicon
+# ===========================================
+*.mlmodel
+*.mlmodelc/
+*.mlpackage/
+.coreml_cache/
+
+# ===========================================
+# ONNX
+# ===========================================
+*.onnx
+onnx_models/
 
 # ===========================================
 # IDE / Editors
@@ -64,13 +104,24 @@ interpolated/
 .project
 .pydevproject
 .settings/
+*.sublime-project
+*.sublime-workspace
+.spyderproject
+.spyproject
 
 # ===========================================
 # OS
 # ===========================================
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
 Thumbs.db
+ehthumbs.db
 desktop.ini
+$RECYCLE.BIN/
+nul
 
 # ===========================================
 # Databases
@@ -81,6 +132,7 @@ desktop.ini
 *.sqlite
 *.sqlite-journal
 *.sqlite-wal
+*.sqlite3
 
 # ===========================================
 # Testing / Coverage
@@ -92,33 +144,50 @@ desktop.ini
 htmlcov/
 .pytest_cache/
 .hypothesis/
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.cache/
+junit*.xml
 
 # ===========================================
 # Logs
 # ===========================================
 *.log
 logs/
+*.log.*
 
 # ===========================================
 # Secrets (never commit!)
 # ===========================================
 .env
-.env.local
+.env.*
+!.env.example
 *.pem
 *.key
+*.crt
 credentials.json
 secrets.json
 config/vastai.env
+.vastai/
+.runpod/
+.lambdalabs/
 
 # ===========================================
 # FrameWright Models & Cache
 # ===========================================
 models/
 *.pth
-*.onnx
+*.pt
 *.safetensors
+*.bin
 .cache/
 *.pickle
+*.pkl
+model_cache/
+.model_cache/
+~/.framewright/
 
 # ===========================================
 # Video Processing Artifacts
@@ -128,10 +197,39 @@ models/
 *.avi
 *.mov
 *.webm
+*.wmv
+*.flv
+*.m4v
 !tests/fixtures/*.mp4
 source/
 restored/
 previews/
+comparison/
+
+# ===========================================
+# Image Artifacts (from frame extraction)
+# ===========================================
+*.png
+*.jpg
+*.jpeg
+*.bmp
+*.tiff
+!docs/**/*.png
+!docs/**/*.jpg
+!tests/fixtures/*.png
+!tests/fixtures/*.jpg
+!assets/*.png
+!assets/*.jpg
+
+# ===========================================
+# Audio Artifacts
+# ===========================================
+*.wav
+*.mp3
+*.aac
+*.flac
+*.ogg
+!tests/fixtures/*.wav
 
 # ===========================================
 # Documentation Build
@@ -139,12 +237,14 @@ previews/
 site/
 _build/
 .doctrees/
+docs/_build/
 
 # ===========================================
 # Security
 # ===========================================
 .secrets.baseline
 .secrets/
+.security/
 
 # ===========================================
 # MyPy / Type Checking
@@ -152,14 +252,50 @@ _build/
 .mypy_cache/
 .dmypy.json
 dmypy.json
+.pyre/
+.pytype/
 
 # ===========================================
 # Jupyter
 # ===========================================
 .ipynb_checkpoints/
 *.ipynb
+!notebooks/*.ipynb
 
 # ===========================================
 # Docker
 # ===========================================
 docker-compose.override.yml
+.docker/
+
+# ===========================================
+# Node.js (if any frontend/tooling)
+# ===========================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm/
+package-lock.json
+yarn.lock
+
+# ===========================================
+# Profiling / Benchmarks
+# ===========================================
+*.prof
+*.pstats
+.benchmarks/
+benchmark_results/
+memory_profiles/
+
+# ===========================================
+# Misc
+# ===========================================
+*.bak
+*.tmp
+*.temp
+*.old
+.scratch/
+scratch/
+TODO.md
+NOTES.md

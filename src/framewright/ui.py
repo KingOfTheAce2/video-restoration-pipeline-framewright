@@ -67,6 +67,11 @@ QUALITY_PRESETS: Dict[str, Dict[str, Any]] = {
         "interpolate": False,
         "enable_colorization": False,
         "enable_watermark_removal": False,
+        # Preprocessing fixes
+        "enable_interlace_fix": False,
+        "enable_letterbox_crop": False,
+        "enable_film_color_correction": False,
+        "enable_audio_sync_fix": False,
         "description": "Fast processing with lower quality. Good for previewing results.",
     },
     "Balanced": {
@@ -77,6 +82,11 @@ QUALITY_PRESETS: Dict[str, Dict[str, Any]] = {
         "interpolate": False,
         "enable_colorization": False,
         "enable_watermark_removal": False,
+        # Preprocessing fixes
+        "enable_interlace_fix": False,
+        "enable_letterbox_crop": False,
+        "enable_film_color_correction": False,
+        "enable_audio_sync_fix": False,
         "description": "Recommended default. Good balance of quality and speed.",
     },
     "Maximum Quality": {
@@ -88,6 +98,11 @@ QUALITY_PRESETS: Dict[str, Dict[str, Any]] = {
         "target_fps": 60,
         "enable_colorization": False,
         "enable_watermark_removal": False,
+        # Preprocessing fixes - enabled for maximum quality
+        "enable_interlace_fix": True,
+        "enable_letterbox_crop": True,
+        "enable_film_color_correction": True,
+        "enable_audio_sync_fix": True,
         "description": "Highest quality output. Best for archival purposes. Slower processing.",
     },
     "Custom": {
@@ -98,6 +113,11 @@ QUALITY_PRESETS: Dict[str, Dict[str, Any]] = {
         "interpolate": None,
         "enable_colorization": None,
         "enable_watermark_removal": None,
+        # Preprocessing fixes
+        "enable_interlace_fix": None,
+        "enable_letterbox_crop": None,
+        "enable_film_color_correction": None,
+        "enable_audio_sync_fix": None,
         "description": "Manual settings. Adjust all parameters yourself.",
     },
 }
@@ -332,12 +352,190 @@ if HAS_GRADIO:
             except Exception as e:
                 return f"❌ Analysis failed: {e}", 4, "realesrgan-x4plus", "Error"
 
+        def scan_preprocessing_issues(
+            input_video: str,
+            youtube_url: str,
+        ) -> Tuple[str, Dict[str, Any]]:
+            """Scan video for preprocessing issues.
+
+            Runs detectors for interlace, letterbox, film color fading, and audio sync.
+
+            Returns:
+                Tuple of (markdown_report, issues_dict)
+            """
+            if youtube_url and youtube_url.strip():
+                return (
+                    "⚠️ YouTube videos must be downloaded first before scanning.\n"
+                    "Run restoration once to download, then scan.",
+                    {}
+                )
+
+            if not input_video:
+                return "❌ Please upload a video first.", {}
+
+            video_path = Path(input_video)
+            if not video_path.exists():
+                return f"❌ Video file not found: {input_video}", {}
+
+            issues = {}
+            report_lines = ["## 🔍 Preprocessing Scan Results\n"]
+
+            # 1. Interlace detection
+            try:
+                from .processors.interlace_handler import InterlaceDetector
+                detector = InterlaceDetector(sample_count=30)
+                interlace_result = detector.analyze(video_path)
+
+                if interlace_result.is_interlaced:
+                    issues["interlace"] = {
+                        "detected": True,
+                        "type": interlace_result.interlace_type.value,
+                        "field_order": interlace_result.field_order,
+                        "confidence": interlace_result.confidence,
+                        "recommended_method": interlace_result.recommended_method.value,
+                    }
+                    report_lines.append(
+                        f"### ✅ Interlacing Detected\n"
+                        f"- **Type:** {interlace_result.interlace_type.value.replace('_', ' ').title()}\n"
+                        f"- **Field order:** {interlace_result.field_order.upper()}\n"
+                        f"- **Confidence:** {interlace_result.confidence*100:.0f}%\n"
+                        f"- **Recommended method:** {interlace_result.recommended_method.value.upper()}\n"
+                    )
+                else:
+                    issues["interlace"] = {"detected": False}
+                    report_lines.append("### Progressive Video (no interlacing)\n")
+            except Exception as e:
+                issues["interlace"] = {"detected": False, "error": str(e)}
+                report_lines.append(f"### ⚠️ Interlace detection skipped\n*{e}*\n")
+
+            # 2. Letterbox/pillarbox detection
+            try:
+                from .processors.letterbox_handler import LetterboxDetector
+                detector = LetterboxDetector(sample_count=20)
+                letterbox_result = detector.analyze(video_path)
+
+                if letterbox_result.has_letterbox or letterbox_result.has_pillarbox:
+                    bar_type = []
+                    if letterbox_result.has_letterbox:
+                        bar_type.append("letterbox")
+                    if letterbox_result.has_pillarbox:
+                        bar_type.append("pillarbox")
+
+                    issues["letterbox"] = {
+                        "detected": True,
+                        "type": bar_type,
+                        "top_bar": letterbox_result.top_bar,
+                        "bottom_bar": letterbox_result.bottom_bar,
+                        "left_bar": letterbox_result.left_bar,
+                        "right_bar": letterbox_result.right_bar,
+                        "bar_percentage": letterbox_result.bar_percentage,
+                        "content_aspect": letterbox_result.content_aspect.name,
+                    }
+                    report_lines.append(
+                        f"### ✅ Black Bars Detected\n"
+                        f"- **Type:** {' + '.join(bar_type).title()}\n"
+                        f"- **Bars:** Top={letterbox_result.top_bar}px, Bottom={letterbox_result.bottom_bar}px, "
+                        f"Left={letterbox_result.left_bar}px, Right={letterbox_result.right_bar}px\n"
+                        f"- **Wasted pixels:** {letterbox_result.bar_percentage:.1f}%\n"
+                        f"- **Content aspect:** {letterbox_result.content_aspect.name}\n"
+                    )
+                else:
+                    issues["letterbox"] = {"detected": False}
+                    report_lines.append("### No Black Bars Detected\n")
+            except Exception as e:
+                issues["letterbox"] = {"detected": False, "error": str(e)}
+                report_lines.append(f"### ⚠️ Letterbox detection skipped\n*{e}*\n")
+
+            # 3. Film stock / color fading detection
+            try:
+                from .processors.film_stock_detector import FilmStockDetector
+                detector = FilmStockDetector(sample_count=30)
+                film_result = detector.analyze(video_path)
+
+                if film_result.fading_detected or film_result.detected_stock.value != "unknown":
+                    issues["film_color"] = {
+                        "detected": True,
+                        "stock": film_result.detected_stock.value,
+                        "era": film_result.era.value,
+                        "fading_detected": film_result.fading_detected,
+                        "fading_pattern": film_result.fading_pattern,
+                        "fading_severity": film_result.fading_severity,
+                        "confidence": film_result.confidence,
+                    }
+                    stock_name = film_result.detected_stock.value.replace("_", " ").title()
+                    report_lines.append(
+                        f"### ✅ Film Color Issues Detected\n"
+                        f"- **Detected stock:** {stock_name}\n"
+                        f"- **Era:** {film_result.era.value.replace('_', ' ').title()}\n"
+                        f"- **Color cast:** {film_result.dominant_hue}\n"
+                    )
+                    if film_result.fading_detected:
+                        report_lines.append(
+                            f"- **Fading:** {film_result.fading_pattern} "
+                            f"({film_result.fading_severity*100:.0f}% severity)\n"
+                        )
+                else:
+                    issues["film_color"] = {"detected": False}
+                    report_lines.append("### No Film Color Issues Detected\n")
+            except Exception as e:
+                issues["film_color"] = {"detected": False, "error": str(e)}
+                report_lines.append(f"### ⚠️ Film stock detection skipped\n*{e}*\n")
+
+            # 4. Audio sync drift detection
+            try:
+                from .processors.audio_sync import AudioSyncAnalyzer
+                analyzer = AudioSyncAnalyzer()
+                sync_result = analyzer.analyze_sync(video_path)
+
+                if sync_result.needs_correction:
+                    issues["audio_sync"] = {
+                        "detected": True,
+                        "drift_ms": sync_result.drift_ms,
+                        "drift_direction": sync_result.drift_direction,
+                        "confidence": sync_result.confidence,
+                        "is_progressive": sync_result.is_progressive,
+                    }
+                    report_lines.append(
+                        f"### ✅ Audio Sync Drift Detected\n"
+                        f"- **Drift:** {sync_result.drift_ms:.1f}ms "
+                        f"({sync_result.drift_direction.replace('_', ' ')})\n"
+                        f"- **Confidence:** {sync_result.confidence*100:.0f}%\n"
+                        f"- **Progressive drift:** {'Yes' if sync_result.is_progressive else 'No'}\n"
+                    )
+                else:
+                    issues["audio_sync"] = {
+                        "detected": False,
+                        "drift_ms": sync_result.drift_ms,
+                    }
+                    report_lines.append(
+                        f"### Audio Sync OK\n"
+                        f"*Drift: {sync_result.drift_ms:.1f}ms (within tolerance)*\n"
+                    )
+            except Exception as e:
+                issues["audio_sync"] = {"detected": False, "error": str(e)}
+                report_lines.append(f"### ⚠️ Audio sync detection skipped\n*{e}*\n")
+
+            # Summary
+            detected_count = sum(
+                1 for k, v in issues.items()
+                if isinstance(v, dict) and v.get("detected", False)
+            )
+            report_lines.append(
+                f"\n---\n**Summary:** {detected_count} issue(s) detected. "
+                f"Enable the corresponding fixes above."
+            )
+
+            return "\n".join(report_lines), issues
+
         def on_preset_change(preset_name: str) -> Tuple[Any, ...]:
             """Handle preset selection and update UI fields.
 
             Returns tuple of updated values for:
             (scale_factor, crf, model, enhance_audio, interpolate, target_fps_visible,
-             enable_colorization, enable_watermark_removal, preset_description)
+             enable_colorization, enable_watermark_removal,
+             enable_interlace_fix, enable_letterbox_crop,
+             enable_film_color_correction, enable_audio_sync_fix,
+             preset_description)
             """
             if preset_name == "Custom" or preset_name not in QUALITY_PRESETS:
                 # Return gr.update() for each field to keep current values
@@ -350,6 +548,10 @@ if HAS_GRADIO:
                     gr.update(),  # target_fps visibility
                     gr.update(),  # enable_colorization
                     gr.update(),  # enable_watermark_removal
+                    gr.update(),  # enable_interlace_fix
+                    gr.update(),  # enable_letterbox_crop
+                    gr.update(),  # enable_film_color_correction
+                    gr.update(),  # enable_audio_sync_fix
                     "*Manual settings mode - adjust parameters as needed.*",  # description
                 )
 
@@ -365,6 +567,10 @@ if HAS_GRADIO:
                 gr.update(visible=interpolate_val),  # target_fps visibility
                 preset["enable_colorization"],  # enable_colorization
                 preset["enable_watermark_removal"],  # enable_watermark_removal
+                preset.get("enable_interlace_fix", False),  # enable_interlace_fix
+                preset.get("enable_letterbox_crop", False),  # enable_letterbox_crop
+                preset.get("enable_film_color_correction", False),  # enable_film_color_correction
+                preset.get("enable_audio_sync_fix", False),  # enable_audio_sync_fix
                 f"*{preset['description']}*",  # description
             )
 
@@ -476,6 +682,8 @@ if HAS_GRADIO:
         def restore_video(
             input_video: str,
             youtube_url: str,
+            youtube_download_folder: str,
+            youtube_quality: str,
             output_folder: str,
             output_format: str,
             scale_factor: int,
@@ -492,6 +700,14 @@ if HAS_GRADIO:
             colorization_model: str,
             enable_watermark_removal: bool,
             watermark_auto_detect: bool,
+            # Preprocessing fixes
+            enable_interlace_fix: bool,
+            interlace_method: str,
+            enable_letterbox_crop: bool,
+            enable_film_color_correction: bool,
+            film_stock_override: str,
+            enable_audio_sync_fix: bool,
+            audio_sync_method: str,
             progress: gr.Progress = gr.Progress(),
         ) -> Tuple[Optional[str], str]:
             """Run video restoration pipeline.
@@ -519,9 +735,62 @@ if HAS_GRADIO:
 
                 # Determine input source
                 if youtube_url and youtube_url.strip():
-                    source = youtube_url.strip()
+                    yt_url = youtube_url.strip()
                     log(f"Source: YouTube URL")
-                    log(f"  URL: {source}")
+                    log(f"  URL: {yt_url}")
+
+                    # Determine download folder
+                    if youtube_download_folder and youtube_download_folder.strip():
+                        dl_folder = Path(youtube_download_folder.strip()).expanduser()
+                    else:
+                        dl_folder = Path(tempfile.mkdtemp(prefix="framewright_yt_"))
+                    dl_folder.mkdir(parents=True, exist_ok=True)
+                    log(f"  Download folder: {dl_folder}")
+                    log(f"  Quality: {youtube_quality or 'best'}")
+
+                    # Download from YouTube
+                    log_section("DOWNLOADING FROM YOUTUBE")
+                    progress(0.05, desc="Downloading from YouTube...")
+
+                    try:
+                        from .utils.youtube import YouTubeDownloader, get_ytdlp_path
+
+                        if not get_ytdlp_path():
+                            return None, "Error: yt-dlp not found. Install with: pip install yt-dlp"
+
+                        downloader = YouTubeDownloader(output_dir=dl_folder)
+
+                        # Get video info
+                        log("Fetching video info...")
+                        info = downloader.get_video_info(yt_url)
+                        if info:
+                            log(f"  Title: {info.title}")
+                            log(f"  Channel: {info.channel or 'Unknown'}")
+                            if info.duration:
+                                mins, secs = divmod(int(info.duration), 60)
+                                log(f"  Duration: {mins}m {secs}s")
+
+                        # Download
+                        log("Starting download...")
+                        progress(0.1, desc="Downloading video...")
+
+                        downloaded_path = downloader.download(
+                            yt_url,
+                            quality=youtube_quality or "best",
+                        )
+
+                        if downloaded_path and downloaded_path.exists():
+                            log(f"Download complete: {downloaded_path.name}")
+                            source = str(downloaded_path)
+                            progress(0.15, desc="Download complete!")
+                        else:
+                            return None, "Error: Failed to download YouTube video"
+
+                    except ImportError:
+                        return None, "Error: YouTube downloader not available. Install with: pip install yt-dlp"
+                    except Exception as e:
+                        return None, f"Error downloading from YouTube: {e}"
+
                     video_duration = None
                     video_frames = None
                     video_resolution = None
@@ -701,6 +970,15 @@ if HAS_GRADIO:
                         multiplier *= 0.5  # Colorization is expensive
                     if enable_watermark_removal:
                         multiplier *= 0.9  # Inpainting adds some time
+                    # Preprocessing fixes
+                    if enable_interlace_fix:
+                        multiplier *= 0.95  # Deinterlacing is fast
+                    if enable_letterbox_crop:
+                        multiplier *= 0.98  # Cropping is very fast
+                    if enable_film_color_correction:
+                        multiplier *= 0.85  # Color correction adds some time
+                    if enable_audio_sync_fix:
+                        multiplier *= 0.95  # Audio sync analysis adds time
 
                     effective_fps = base_fps * multiplier
                     estimated_seconds = video_frames / effective_fps
@@ -762,6 +1040,16 @@ if HAS_GRADIO:
                 if enable_watermark_removal:
                     detect_mode = "auto-detect" if watermark_auto_detect else "manual"
                     features.append(f"Watermark removal ({detect_mode})")
+                # Preprocessing fixes
+                if enable_interlace_fix:
+                    features.append(f"Deinterlacing ({interlace_method})")
+                if enable_letterbox_crop:
+                    features.append("Letterbox cropping")
+                if enable_film_color_correction:
+                    stock = film_stock_override if film_stock_override != "auto" else "auto-detect"
+                    features.append(f"Film color correction ({stock})")
+                if enable_audio_sync_fix:
+                    features.append(f"Audio sync fix ({audio_sync_method})")
 
                 if features:
                     log(f"Features: {', '.join(features)}")
@@ -792,6 +1080,14 @@ if HAS_GRADIO:
                     # Watermark removal
                     enable_watermark_removal=enable_watermark_removal,
                     watermark_auto_detect=watermark_auto_detect,
+                    # Preprocessing fixes
+                    enable_interlace_fix=enable_interlace_fix,
+                    interlace_method=interlace_method,
+                    enable_letterbox_crop=enable_letterbox_crop,
+                    enable_film_color_correction=enable_film_color_correction,
+                    film_stock_override=film_stock_override if film_stock_override != "auto" else None,
+                    enable_audio_sync_fix=enable_audio_sync_fix,
+                    audio_sync_method=audio_sync_method,
                 )
 
                 # Progress callback with detailed logging (no desc to avoid overlay)
@@ -904,24 +1200,50 @@ if HAS_GRADIO:
 
                 # Tab 2: Restore Video
                 with gr.TabItem("🎥 Restore Video"):
-                    gr.Markdown("### Upload a video or provide a YouTube URL")
+                    gr.Markdown("## Step 1: Select Video Source")
 
                     with gr.Row():
                         with gr.Column(scale=2):
-                            input_video = gr.Video(
-                                label="Upload Video",
-                                sources=["upload"],
-                            )
-                            gr.Markdown("**OR**")
-                            youtube_url = gr.Textbox(
-                                label="YouTube URL",
-                                placeholder="https://www.youtube.com/watch?v=...",
-                            )
+                            # Option A: Local file
+                            with gr.Group():
+                                gr.Markdown("### 📁 Option A: Upload Local File")
+                                input_video = gr.Video(
+                                    label="Upload Video",
+                                    sources=["upload"],
+                                )
+
+                            gr.Markdown("### — OR —")
+
+                            # Option B: YouTube
+                            with gr.Group():
+                                gr.Markdown("### 🌐 Option B: Download from YouTube")
+                                youtube_url = gr.Textbox(
+                                    label="YouTube URL",
+                                    placeholder="https://www.youtube.com/watch?v=...",
+                                    info="Paste any YouTube video URL",
+                                )
+                                with gr.Row():
+                                    youtube_download_folder = gr.Textbox(
+                                        label="Download Folder",
+                                        placeholder="~/Videos/FrameWright",
+                                        value="",
+                                        info="Where to save downloaded video (leave empty for temp)",
+                                        scale=2,
+                                    )
+                                    youtube_quality = gr.Dropdown(
+                                        choices=["best", "1080p", "720p", "480p"],
+                                        value="best",
+                                        label="Quality",
+                                        info="Download quality",
+                                        scale=1,
+                                    )
+
                             gr.Markdown("---")
+                            gr.Markdown("## Step 2: Output Settings")
                             output_folder = gr.Textbox(
-                                label="Output Folder (optional)",
-                                placeholder="/path/to/save/folder",
-                                info="Leave empty to use temporary folder",
+                                label="Output Folder (for restored video)",
+                                placeholder="/path/to/save/restored/video",
+                                info="Leave empty to save next to source video",
                             )
                             output_format = gr.Dropdown(
                                 choices=["mkv", "mp4", "webm", "avi", "mov"],
@@ -931,11 +1253,11 @@ if HAS_GRADIO:
                             )
 
                         with gr.Column(scale=1):
-                            gr.Markdown("### Settings")
+                            gr.Markdown("## Step 3: Configure Restoration")
 
                             # Quality Preset Section
                             with gr.Group():
-                                gr.Markdown("#### Quality Preset")
+                                gr.Markdown("### 🎯 Quality Priority")
                                 quality_preset = gr.Dropdown(
                                     choices=list(QUALITY_PRESETS.keys()),
                                     value="Balanced",
@@ -946,14 +1268,34 @@ if HAS_GRADIO:
                                     f"*{QUALITY_PRESETS['Balanced']['description']}*"
                                 )
 
-                            gr.Markdown("---")
+                            # Quick Reference Guide
+                            with gr.Accordion("📖 Quick Model Selection Guide", open=False):
+                                gr.Markdown(
+                                    """
+                                    **Choose the right model for your content:**
+
+                                    | Content Type | Model | Key Settings |
+                                    |--------------|-------|--------------|
+                                    | 🎞️ **Historical Film (pre-1960)** | Real-ESRGAN x4plus | 4x scale, Denoise: Medium, **Keep B&W**, Preserve grain |
+                                    | 🎬 **Vintage Film (1960-1990)** | Real-ESRGAN x4plus | 4x scale, Denoise: Light, Preserve grain |
+                                    | 📺 **Modern Footage (1990+)** | Real-ESRGAN x4plus | 2x-4x scale, Denoise: Light/OFF |
+                                    | 🎌 **Anime/Animation** | Real-ESR AnimevVideoV3 | 4x scale, Denoise: OFF, Don't interpolate |
+
+                                    **💡 Pro Tip:** For 1909 B&W film that should stay B&W:
+                                    1. Use Real-ESRGAN x4plus model
+                                    2. Upload reference photos from 1900s-1910s era
+                                    3. **Disable colorization** (keep B&W checkbox OFF)
+                                    4. Enable grain preservation
+                                    5. Use CRF 18 for archival quality
+
+                                    See **Help** tab for complete guide.
+                                    """
+                                )
 
                             # Content-Aware Analysis Section
-                            with gr.Group():
-                                gr.Markdown("#### 🔍 Content-Aware Model Selection")
+                            with gr.Accordion("🔍 Auto-Detect Content Type", open=True):
                                 gr.Markdown(
                                     "*Analyze your video to auto-detect anime vs real footage*",
-                                    elem_classes=["hint-text"]
                                 )
 
                                 with gr.Row():
@@ -969,7 +1311,7 @@ if HAS_GRADIO:
                                     )
 
                                 analysis_output = gr.Markdown(
-                                    value="*Upload a video, then click Analyze to get AI-recommended settings*",
+                                    value="*Upload a video, then click Analyze*",
                                     visible=True,
                                 )
 
@@ -977,122 +1319,52 @@ if HAS_GRADIO:
                                 rec_scale = gr.State(value=4)
                                 rec_model = gr.State(value="realesrgan-x4plus")
 
-                            gr.Markdown("---")
-
-                            scale_factor = gr.Radio(
-                                choices=[2, 4],
-                                value=4,
-                                label="Upscale Factor",
-                                info="4x: Old/degraded footage (480p->4K) | 2x: Newer video or mild enhancement",
-                            )
-
-                            gr.Markdown(
-                                """
-*Upscale guide: 4x turns 480p into ~4K, 2x turns 480p into ~1080p. Use 2x if your source is already decent quality.*
-                                """,
-                                elem_classes=["info-text"]
-                            )
-
-                            gr.Markdown(
-                                """
-                                **AI Model Guide:**
-                                | Content Type | Best Model |
-                                |--------------|------------|
-                                | 🎬 Movies, Film, Real footage | `realesrgan-x4plus` |
-                                | 🎌 Anime video (best) | `realesr-animevideov3` |
-                                | 🖼️ Anime stills/mixed | `realesrgan-x4plus-anime` |
-                                """
-                            )
-
-                            model = gr.Dropdown(
-                                choices=[
-                                    ("🎬 realesrgan-x4plus (Movies, Film, Photos)", "realesrgan-x4plus"),
-                                    ("🎌 realesr-animevideov3 (Anime - Best Quality)", "realesr-animevideov3"),
-                                    ("🖼️ realesrgan-x4plus-anime (Anime - Alternative)", "realesrgan-x4plus-anime"),
-                                ],
-                                value="realesrgan-x4plus",
-                                label="AI Model",
-                                info="Use 'Analyze Video' for auto-detection, or select manually",
-                            )
-
-                            crf = gr.Slider(
-                                minimum=15,
-                                maximum=28,
-                                value=18,
-                                step=1,
-                                label="Quality (CRF)",
-                                info="15-18: Archival | 19-22: High quality | 23: FFmpeg default | 24-28: Smaller files",
-                            )
-
-                            enhance_audio = gr.Checkbox(
-                                value=True,
-                                label="Enhance Audio",
-                                info="Apply noise reduction and normalization",
-                            )
-
-                            force_cpu = gr.Checkbox(
-                                value=False,
-                                label="⚠️ Force CPU Mode",
-                                info="Use CPU instead of GPU (VERY slow, use only if GPU fails)",
-                            )
-
-                            with gr.Accordion("Advanced Options", open=False):
-                                model_download_dir = gr.Textbox(
-                                    label="Model Download Location",
-                                    placeholder="~/.framewright/models",
-                                    info="Where AI models are downloaded (leave empty for default)",
+                            # Upscaling Settings
+                            with gr.Accordion("📐 Upscaling", open=True):
+                                scale_factor = gr.Radio(
+                                    choices=[2, 4],
+                                    value=4,
+                                    label="Upscale Factor",
+                                    info="4x: Old footage (480p→4K) | 2x: Newer video",
                                 )
 
-                                gr.Markdown("### 🎞️ Frame Deduplication")
+                                model = gr.Dropdown(
+                                    choices=[
+                                        ("🎬 Real-ESRGAN x4plus (Movies, Film, Historical)", "realesrgan-x4plus"),
+                                        ("🎌 Real-ESR AnimevVideoV3 (Anime Video - Best)", "realesr-animevideov3"),
+                                        ("🖼️ Real-ESRGAN x4plus Anime (Anime Alt)", "realesrgan-x4plus-anime"),
+                                    ],
+                                    value="realesrgan-x4plus",
+                                    label="AI Model",
+                                    info="Real-ESRGAN x4plus: Best for real footage, photos, historical film | Anime models: For animation only",
+                                )
+
+                            # Quality & Audio
+                            with gr.Accordion("🎚️ Quality & Audio", open=True):
+                                crf = gr.Slider(
+                                    minimum=15,
+                                    maximum=28,
+                                    value=18,
+                                    step=1,
+                                    label="Quality (CRF)",
+                                    info="15-18: Archival | 19-22: High | 23+: Smaller files",
+                                )
+
+                                enhance_audio = gr.Checkbox(
+                                    value=True,
+                                    label="Enhance Audio",
+                                    info="Noise reduction and normalization",
+                                )
+
+                            # Frame Interpolation
+                            with gr.Accordion("🎬 Frame Interpolation (Smooth Motion)", open=False):
                                 gr.Markdown(
-                                    "*For old films digitized at higher FPS with duplicate frames (e.g., 18fps film uploaded as 25fps)*"
+                                    "💡 **When to use:** Low frame rate sources or modern smooth viewing. **Don't use** for animation (blurs motion lines) or if preserving cinematic 24fps feel."
                                 )
-
-                                enable_deduplication = gr.Checkbox(
-                                    value=False,
-                                    label="Enable Frame Deduplication",
-                                    info="Extract unique frames only - dramatically speeds up processing for padded footage",
-                                )
-
-                                deduplication_threshold = gr.Slider(
-                                    minimum=0.90,
-                                    maximum=0.99,
-                                    value=0.98,
-                                    step=0.01,
-                                    label="Similarity Threshold",
-                                    info="0.98 = strict (catches most duplicates), 0.95 = lenient (handles compression artifacts)",
-                                    visible=False,
-                                )
-
-                                dedup_info = gr.Markdown(
-                                    """
-**How it works:**
-1. Analyzes all frames to detect duplicates (e.g., 18fps film padded to 25fps)
-2. Enhances only unique frames (saves 30-50% processing time)
-3. RIFE interpolates back to smooth motion
-4. Reconstructs final video at target FPS
-
-**Recommended workflow for old films:**
-- ✅ Enable Deduplication
-- ✅ Enable Frame Interpolation (RIFE)
-- Set Target FPS to 24 for natural motion
-                                    """,
-                                    visible=False,
-                                )
-
-                                enable_deduplication.change(
-                                    fn=lambda x: [gr.update(visible=x), gr.update(visible=x)],
-                                    inputs=enable_deduplication,
-                                    outputs=[deduplication_threshold, dedup_info],
-                                )
-
-                                gr.Markdown("---")
-                                gr.Markdown("### 🎬 Frame Interpolation (RIFE)")
-
                                 interpolate = gr.Checkbox(
                                     value=False,
                                     label="Enable Frame Interpolation",
-                                    info="Smoothly increase frame rate using AI",
+                                    info="AI-powered frame rate increase (RIFE) - creates intermediate frames",
                                 )
 
                                 target_fps = gr.Slider(
@@ -1101,76 +1373,162 @@ if HAS_GRADIO:
                                     value=24,
                                     step=6,
                                     label="Target FPS",
-                                    visible=False,
+                                    info="24fps: Cinematic | 30fps: Subtle smooth | 60fps: Very smooth (modern look)",
                                 )
 
-                                fps_guide = gr.Markdown(
-                                    """
-**FPS Guide for Historical Footage:**
-| Era | Original FPS | Recommended Target |
-|-----|--------------|-------------------|
-| 1890s-1920s (Silent films) | 12-18 fps | **24 fps** - natural smoothing |
-| 1920s-1950s (Early talkies) | 18-24 fps | **24-30 fps** - subtle improvement |
-| 1950s-1980s (TV/Film) | 24-30 fps | **30 fps** - standard |
-| Modern footage | 24-60 fps | **30-60 fps** - if needed |
-
-*Tip: For old films, 24 fps is usually ideal. 60 fps can look unnaturally smooth ("soap opera effect") for vintage footage.*
-                                    """,
-                                    visible=False,
+                            # Colorization
+                            with gr.Accordion("🎨 Colorization (B&W to Color)", open=False):
+                                gr.Markdown(
+                                    "⚠️ **Important:** Only enable for B&W footage. Do NOT colorize if B&W is intentional (artistic choice) or if preserving historical accuracy."
                                 )
-
-                                interpolate.change(
-                                    fn=lambda x: [gr.update(visible=x), gr.update(visible=x)],
-                                    inputs=interpolate,
-                                    outputs=[target_fps, fps_guide],
-                                )
-
-                                gr.Markdown("---")
-                                gr.Markdown("### 🎨 Colorization")
-
                                 enable_colorization = gr.Checkbox(
                                     value=False,
                                     label="Enable Colorization",
-                                    info="Colorize black & white footage using AI",
+                                    info="AI colorization for black & white footage - disable to keep B&W",
                                 )
 
                                 colorization_model = gr.Dropdown(
                                     choices=[
                                         ("DDColor (Better quality)", "ddcolor"),
-                                        ("DeOldify (Open source)", "deoldify"),
+                                        ("DeOldify (Faster, good for vintage)", "deoldify"),
                                     ],
                                     value="ddcolor",
                                     label="Colorization Model",
-                                    visible=False,
+                                    info="DDColor: Higher quality, slower | DeOldify: Faster, open source",
                                 )
 
-                                enable_colorization.change(
-                                    fn=lambda x: gr.update(visible=x),
-                                    inputs=enable_colorization,
-                                    outputs=colorization_model,
-                                )
-
-                                gr.Markdown("---")
-                                gr.Markdown("### 🚫 Watermark Removal")
-
+                            # Watermark Removal
+                            with gr.Accordion("🚫 Watermark Removal", open=False):
                                 enable_watermark_removal = gr.Checkbox(
                                     value=False,
                                     label="Enable Watermark Removal",
-                                    info="Remove logos/watermarks using AI inpainting",
+                                    info="AI inpainting to remove logos/watermarks",
                                 )
 
                                 watermark_auto_detect = gr.Checkbox(
                                     value=True,
                                     label="Auto-detect Watermarks",
-                                    info="Automatically detect watermark locations",
-                                    visible=False,
+                                    info="Automatically find watermark locations",
                                 )
 
-                                enable_watermark_removal.change(
-                                    fn=lambda x: gr.update(visible=x),
-                                    inputs=enable_watermark_removal,
-                                    outputs=watermark_auto_detect,
+                            # Advanced/Technical Options
+                            with gr.Accordion("⚙️ Advanced Options", open=False):
+                                force_cpu = gr.Checkbox(
+                                    value=False,
+                                    label="⚠️ Force CPU Mode",
+                                    info="Use CPU instead of GPU (VERY slow, only if GPU fails)",
                                 )
+
+                                model_download_dir = gr.Textbox(
+                                    label="Model Download Location",
+                                    placeholder="~/.framewright/models",
+                                    info="Where AI models are downloaded (leave empty for default)",
+                                )
+
+                                gr.Markdown("### 🎞️ Frame Deduplication")
+                                gr.Markdown(
+                                    "*For old films digitized at higher FPS with duplicate frames*"
+                                )
+
+                                enable_deduplication = gr.Checkbox(
+                                    value=False,
+                                    label="Enable Frame Deduplication",
+                                    info="Extract unique frames only - speeds up processing",
+                                )
+
+                                deduplication_threshold = gr.Slider(
+                                    minimum=0.90,
+                                    maximum=0.99,
+                                    value=0.98,
+                                    step=0.01,
+                                    label="Similarity Threshold",
+                                    info="0.98 = strict, 0.95 = lenient",
+                                )
+
+                            # Preprocessing Fixes
+                            with gr.Accordion("🔧 Preprocessing Fixes", open=False):
+                                gr.Markdown(
+                                    "*Scan your video to detect issues before restoration*"
+                                )
+
+                                with gr.Row():
+                                    preprocess_scan_btn = gr.Button(
+                                        "🔍 Scan for Issues",
+                                        variant="secondary",
+                                        size="sm",
+                                    )
+
+                                preprocess_scan_output = gr.Markdown(
+                                    value="*Upload a video, then click Scan for Issues*"
+                                )
+
+                                # Hidden state for detected issues
+                                preprocess_issues_state = gr.State(value={})
+
+                                gr.Markdown("---")
+                                gr.Markdown("### Fix Options")
+
+                                # Interlace fix
+                                with gr.Row():
+                                    enable_interlace_fix = gr.Checkbox(
+                                        value=False,
+                                        label="Fix Interlacing",
+                                        info="Deinterlace video content",
+                                    )
+                                    interlace_method = gr.Dropdown(
+                                        choices=["auto", "yadif", "bwdif", "nnedi"],
+                                        value="auto",
+                                        label="Deinterlace Method",
+                                        info="Auto uses recommended method from scan",
+                                        scale=1,
+                                    )
+
+                                # Letterbox crop
+                                enable_letterbox_crop = gr.Checkbox(
+                                    value=False,
+                                    label="Crop Black Bars",
+                                    info="Remove letterbox/pillarbox black bars",
+                                )
+
+                                # Film color correction
+                                with gr.Row():
+                                    enable_film_color_correction = gr.Checkbox(
+                                        value=False,
+                                        label="Fix Film Color Fading",
+                                        info="Correct color fading from aged film stock",
+                                    )
+                                    film_stock_override = gr.Dropdown(
+                                        choices=[
+                                            ("Auto-detect", "auto"),
+                                            ("Kodachrome", "kodachrome"),
+                                            ("Ektachrome", "ektachrome"),
+                                            ("Eastmancolor", "eastmancolor"),
+                                            ("Technicolor 3-strip", "technicolor_3"),
+                                            ("Agfacolor", "agfacolor"),
+                                            ("Fujifilm", "fujifilm"),
+                                        ],
+                                        value="auto",
+                                        label="Film Stock",
+                                        info="Override auto-detected stock",
+                                        scale=1,
+                                    )
+
+                                # Audio sync fix
+                                with gr.Row():
+                                    enable_audio_sync_fix = gr.Checkbox(
+                                        value=False,
+                                        label="Fix Audio Sync Drift",
+                                        info="Correct audio-video synchronization",
+                                    )
+                                    audio_sync_method = gr.Dropdown(
+                                        choices=[
+                                            ("Resample (better quality)", "resample"),
+                                            ("PTS Adjust (faster)", "pts_adjust"),
+                                        ],
+                                        value="resample",
+                                        label="Sync Method",
+                                        scale=1,
+                                    )
 
                     with gr.Row():
                         restore_btn = gr.Button(
@@ -1208,6 +1566,8 @@ if HAS_GRADIO:
                         inputs=[
                             input_video,
                             youtube_url,
+                            youtube_download_folder,
+                            youtube_quality,
                             output_folder,
                             output_format,
                             scale_factor,
@@ -1224,6 +1584,14 @@ if HAS_GRADIO:
                             colorization_model,
                             enable_watermark_removal,
                             watermark_auto_detect,
+                            # Preprocessing fixes
+                            enable_interlace_fix,
+                            interlace_method,
+                            enable_letterbox_crop,
+                            enable_film_color_correction,
+                            film_stock_override,
+                            enable_audio_sync_fix,
+                            audio_sync_method,
                         ],
                         outputs=[output_video, log_output],
                     )
@@ -1259,6 +1627,53 @@ if HAS_GRADIO:
                         outputs=[scale_factor, model, quality_preset],
                     )
 
+                    # Preprocessing scan button - detects issues and auto-enables fixes
+                    def scan_and_auto_enable(input_video, youtube_url):
+                        """Scan for preprocessing issues and return updated UI state."""
+                        report, issues = scan_preprocessing_issues(input_video, youtube_url)
+
+                        # Auto-enable checkboxes based on detected issues
+                        interlace_detected = issues.get("interlace", {}).get("detected", False)
+                        letterbox_detected = issues.get("letterbox", {}).get("detected", False)
+                        film_color_detected = issues.get("film_color", {}).get("detected", False)
+                        audio_sync_detected = issues.get("audio_sync", {}).get("detected", False)
+
+                        # Get recommended interlace method
+                        interlace_method_rec = issues.get("interlace", {}).get(
+                            "recommended_method", "auto"
+                        )
+
+                        # Get detected film stock for override dropdown
+                        film_stock_rec = issues.get("film_color", {}).get("stock", "auto")
+                        if film_stock_rec == "unknown":
+                            film_stock_rec = "auto"
+
+                        return (
+                            report,
+                            issues,
+                            interlace_detected,
+                            interlace_method_rec if interlace_detected else gr.update(),
+                            letterbox_detected,
+                            film_color_detected,
+                            film_stock_rec if film_color_detected else gr.update(),
+                            audio_sync_detected,
+                        )
+
+                    preprocess_scan_btn.click(
+                        fn=scan_and_auto_enable,
+                        inputs=[input_video, youtube_url],
+                        outputs=[
+                            preprocess_scan_output,
+                            preprocess_issues_state,
+                            enable_interlace_fix,
+                            interlace_method,
+                            enable_letterbox_crop,
+                            enable_film_color_correction,
+                            film_stock_override,
+                            enable_audio_sync_fix,
+                        ],
+                    )
+
                     # Preset change handler - updates all related fields
                     quality_preset.change(
                         fn=on_preset_change,
@@ -1272,6 +1687,10 @@ if HAS_GRADIO:
                             target_fps,
                             enable_colorization,
                             enable_watermark_removal,
+                            enable_interlace_fix,
+                            enable_letterbox_crop,
+                            enable_film_color_correction,
+                            enable_audio_sync_fix,
                             preset_description,
                         ],
                     )
@@ -1281,7 +1700,9 @@ if HAS_GRADIO:
                         return "Custom", "*Manual settings mode - adjust parameters as needed.*"
 
                     for component in [scale_factor, crf, model, enhance_audio, interpolate,
-                                      enable_colorization, enable_watermark_removal]:
+                                      enable_colorization, enable_watermark_removal,
+                                      enable_interlace_fix, enable_letterbox_crop,
+                                      enable_film_color_correction, enable_audio_sync_fix]:
                         component.change(
                             fn=switch_to_custom,
                             outputs=[quality_preset, preset_description],
@@ -1543,17 +1964,102 @@ if HAS_GRADIO:
 
                         **💡 Tip:** Use the **"🔍 Analyze Video"** button to auto-detect content type!
 
-                        | Content Type | Recommended Model | Auto-Detected As |
-                        |--------------|-------------------|------------------|
-                        | **Movies & Film** | `realesrgan-x4plus` | Landscape, Face Portrait |
-                        | **Photos & Real Images** | `realesrgan-x4plus` | High Contrast, Architecture |
-                        | **Anime (Best Quality)** | `realesr-animevideov3` | Animation |
-                        | **Anime (Alternative)** | `realesrgan-x4plus-anime` | Animation |
+                        #### Quick Decision Tree
 
-                        The analyzer examines sample frames to detect:
-                        - **Anime/Animation**: Low edge density, flat colors → Uses anime models
-                        - **Real footage with faces**: Face detection → Enables face restoration
-                        - **Degradation level**: Noise, grain, blur → Recommends 4x vs 2x scale
+                        ```
+                        Is your content animated/anime?
+                        ├─ YES → Use "realesr-animevideov3" or "realesrgan-x4plus-anime"
+                        └─ NO → Continue...
+
+                        Is it real footage?
+                        ├─ YES → Continue...
+                        └─ NO (CGI/Game) → Use "realesrgan-x4plus"
+
+                        What decade is your footage from?
+                        ├─ Pre-1960 (Old film/historical) → See Historical Film settings below ⭐
+                        ├─ 1960-1990 (Vintage) → Standard + grain preservation
+                        └─ 1990+ (Modern) → Standard settings
+                        ```
+
+                        #### Model Recommendations by Content Type
+
+                        | Content Type | Model | Settings |
+                        |--------------|-------|----------|
+                        | **Historical Film (Pre-1960)** | `realesrgan-x4plus` | Denoise: medium, Preserve grain: ON, Reference enhance: ON |
+                        | **Vintage Film (1960-1990)** | `realesrgan-x4plus` | Denoise: light, Preserve grain: ON, Face restore: ON |
+                        | **Modern Footage (1990+)** | `realesrgan-x4plus` | Denoise: light/off, Face restore: optional |
+                        | **Anime/Animation** | `realesr-animevideov3` | Denoise: light/off, Interpolate: use caution |
+
+                        #### Special Case: 1909 B&W Historical Film
+
+                        For heavily degraded B&W footage that should **stay B&W** with reference-guided detail:
+
+                        **Optimal Configuration:**
+                        - **Upscale Model:** `realesrgan-x4plus`
+                        - **Denoise:** Medium strength (Restormer if available)
+                        - **Reference Enhance:** ✅ ENABLE (upload 3-5 historical photos from same era)
+                        - **Colorize:** ❌ DISABLE (keep B&W)
+                        - **Preserve Grain:** ✅ ENABLE
+                        - **Quality (CRF):** 18 (archival quality)
+
+                        **Reference Images:** Upload high-quality B&W photos from 1900s-1910s to guide AI enhancement
+
+                        #### When to Use Reference Enhancement
+
+                        ✅ **Use When:**
+                        - Historical footage with heavy degradation
+                        - You have reference photos from the same era/style
+                        - Archival restoration projects
+
+                        ❌ **Don't Use When:**
+                        - Modern, clean footage
+                        - No reference images available
+
+                        **How It Works:** Upload 3-5 reference images, and the AI uses them to guide detail reconstruction
+
+                        ### Recommended Workflows by Content Type
+
+                        #### 1909 Silent Film → 4K Restored (Your Case!)
+                        1. **Analyze video** → detects B&W, heavy degradation
+                        2. **Upload references:** Historical photos from 1900s-1910s
+                        3. **Settings:**
+                           - Scale: **4x**, Model: **realesrgan-x4plus**
+                           - Denoise: **Medium** (Restormer if available)
+                           - Reference enhance: **ON** (70% strength)
+                           - Colorize: **OFF** (stay B&W)
+                           - Preserve grain: **ON**
+                           - Enable deduplication: **ON** (0.98 threshold)
+                           - Quality (CRF): **18** (archival)
+                        4. **Export:** 4K, MKV format
+
+                        #### 1960s Color Film → Modern HD
+                        1. **Analyze video** → detects vintage color film
+                        2. **Settings:**
+                           - Scale: **4x**, Model: **realesrgan-x4plus**
+                           - Denoise: **Light**
+                           - Face restore: **ON** (if faces present)
+                           - Preserve grain: **ON**
+                           - Color correction: **Auto-fix fading**
+                           - Quality (CRF): **20**
+                        3. **Export:** 1080p, MKV/MP4
+
+                        #### 1990s Anime VHS → 1080p60
+                        1. **Analyze video** → detects animation
+                        2. **Settings:**
+                           - Scale: **4x**, Model: **realesr-animevideov3**
+                           - Denoise: **Light**
+                           - Interpolate: **ON** (30fps → 60fps)
+                           - Deinterlace: **ON** (YADIF)
+                           - Quality (CRF): **23**
+                        3. **Export:** 1080p60, MP4
+
+                        #### Modern YouTube Video → Enhanced
+                        1. **Settings:**
+                           - Scale: **2x**, Model: **realesrgan-x4plus**
+                           - Denoise: **Light or OFF**
+                           - Face restore: **Optional**
+                           - Quality (CRF): **23**
+                        2. **Export:** Appropriate resolution, MP4
 
                         ### Tips for Old Film (1890s-1920s)
 
@@ -1562,10 +2068,12 @@ if HAS_GRADIO:
                         - For silent films, the pipeline handles missing audio gracefully
                         - Processing time: expect 2-10x the video length
 
-                        ### Frame Deduplication Guide
+                        ### Frame Deduplication Guide (YouTube Padding Fix)
+
+                        **This is what you're asking about with "YouTube padding"!**
 
                         **When to use:** Old films (1890s-1920s) were shot at 16-18 fps but are often
-                        digitized/uploaded at 24-30 fps with duplicate frames inserted. This wastes
+                        digitized/uploaded at 24-30 fps with duplicate frames inserted (padding). This wastes
                         processing time enhancing the same frame multiple times.
 
                         **How it works:**
@@ -1590,15 +2098,64 @@ if HAS_GRADIO:
 
                         ### Colorization Guide
 
+                        #### When to Enable Colorization
+
+                        ✅ **Colorize When:**
+                        - B&W historical footage that would benefit from color
+                        - Family home movies/photos
+                        - Educational content (better engagement)
+                        - Source is definitely grayscale
+
+                        ❌ **Don't Colorize When:**
+                        - B&W is intentional (artistic noir, cinematic choice)
+                        - Historical accuracy required
+                        - Film grain/texture is important (colorization can reduce grain detail)
+                        - User preference for B&W aesthetic
+
                         | Model | Best For | Notes |
                         |-------|----------|-------|
-                        | **DDColor** | Higher quality results | Better color accuracy, slower |
-                        | **DeOldify** | General colorization | Open source, faster |
+                        | **DDColor** | Higher quality results | Better color accuracy, slower, modern approach |
+                        | **DeOldify** | General colorization | Open source, faster, good for vintage footage |
 
                         **Tips:**
                         - Works best on high-contrast B&W footage
                         - May produce artifacts on already-colored videos
                         - GPU recommended for reasonable processing speed
+
+                        ### Film Grain Preservation Guide
+
+                        ✅ **Preserve Grain When:**
+                        - Pre-1980s film footage
+                        - Artistic/cinematic look desired
+                        - Film texture is part of the aesthetic
+                        - Archival/historical projects
+
+                        ❌ **Remove Grain When:**
+                        - Modern digital video
+                        - Clean, polished look desired
+                        - Source grain is degradation (not intentional)
+                        - Preparing for further editing
+
+                        **Note:** If your goal is archival restoration of historical footage, keep grain preservation ON to maintain authenticity.
+
+                        ### Frame Interpolation Guide
+
+                        ✅ **Interpolate When:**
+                        - Low frame rate source (24fps → 60fps)
+                        - Smooth motion desired for modern viewing
+                        - Sports/action content
+                        - Video will be viewed on high-refresh displays
+
+                        ❌ **Don't Interpolate When:**
+                        - Artistic/cinematic 24fps look desired
+                        - Animation (can blur motion lines)
+                        - Already high frame rate (60fps+)
+                        - Historical accuracy required
+
+                        **Settings:**
+                        - **24fps → 30fps:** Subtle smoothness, maintains film feel
+                        - **24fps → 60fps:** Very smooth, modern look (may look unnatural for older content)
+                        - **18fps → 24fps:** Restore original silent film speed
 
                         ### Watermark Removal Guide
 
@@ -1606,6 +2163,57 @@ if HAS_GRADIO:
                         - **Manual regions**: Specify exact coordinates via CLI
                         - Uses LaMA (Large Mask Inpainting) for best quality
                         - Falls back to OpenCV if LaMA unavailable
+
+                        ### Preprocessing Fixes Guide
+
+                        The **Preprocessing Fixes** section in Advanced Options scans your video
+                        and fixes common issues before the main restoration.
+
+                        **How to use:**
+                        1. Upload your video
+                        2. Click **"Scan for Issues"** to analyze the video
+                        3. Review detected issues in the scan report
+                        4. Enable the recommended fixes (checkboxes auto-enable when issues detected)
+                        5. Adjust method dropdowns if needed
+                        6. Start restoration
+
+                        **Available fixes:**
+
+                        | Fix | What it detects | What it fixes |
+                        |-----|-----------------|---------------|
+                        | **Interlacing** | Interlaced/telecine content (VHS, DVD, broadcast) | Deinterlaces using YADIF/BWDIF/NNEDI |
+                        | **Letterbox/Pillarbox** | Black bars (top/bottom/sides) | Crops to content region |
+                        | **Film Color Fading** | Faded Eastmancolor, Kodachrome, etc. | Applies stock-specific color correction |
+                        | **Audio Sync Drift** | A/V desynchronization | Resamples or adjusts PTS to sync |
+
+                        **What These Mean (Explained Simply):**
+
+                        **Interlacing / Deinterlacing:**
+                        - Old analog video (VHS, DVD, TV broadcasts) drew frames in two passes: odd lines first, then even lines
+                        - On modern screens, this creates a "comb" effect with jagged edges
+                        - Deinterlacing combines both passes into one smooth frame
+                        - **NOT the same as frame duplication** - that's handled by Frame Deduplication below
+
+                        **Letterbox/Pillarbox:**
+                        - **Letterbox:** Black bars on top/bottom (widescreen content on old square TVs)
+                        - **Pillarbox:** Black bars on left/right (old square content on widescreen TVs)
+                        - This fix automatically crops out the bars to use the full screen
+                        - **NOT related to YouTube padding** - that's frame duplication, not aspect ratio bars
+
+                        **Deinterlace methods:**
+                        - **Auto**: Uses recommended method from scan
+                        - **YADIF**: Fast, good quality (default)
+                        - **BWDIF**: Better motion handling
+                        - **NNEDI**: Neural network based (highest quality, slower)
+
+                        **Film stock override:**
+                        - Leave as "Auto-detect" unless the scan misidentifies the stock
+                        - Common stocks: Kodachrome (warm tones), Eastmancolor (prone to fading),
+                          Ektachrome (cooler), Technicolor (vibrant)
+
+                        **Audio sync methods:**
+                        - **Resample**: Better quality, subtly adjusts audio speed
+                        - **PTS Adjust**: Faster, shifts timestamps without resampling
 
                         ### Batch Processing Guide
 
@@ -1674,7 +2282,7 @@ def launch_ui(
         return
 
     print("\n" + "=" * 50)
-    print("  🎬 FrameWright Video Restoration UI")
+    print("  FrameWright Video Restoration UI")
     print("=" * 50)
     print(f"\n  Starting web interface...")
     print(f"  Open your browser to: http://{server_name}:{server_port}")

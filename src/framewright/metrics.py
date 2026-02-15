@@ -424,3 +424,161 @@ class ConsoleProgressBar:
         progress = self.reporter.finish()
         elapsed_str = self.reporter.get_eta_string(progress.elapsed_seconds)
         print(f"\n{self.description}: Complete in {elapsed_str}")
+
+
+# =============================================================================
+# Quality Metrics
+# =============================================================================
+
+def calculate_psnr(original: "np.ndarray", restored: "np.ndarray") -> float:
+    """Calculate Peak Signal-to-Noise Ratio between two images.
+
+    Higher values indicate better quality (typically 30-50 dB is good).
+
+    Args:
+        original: Original image as numpy array
+        restored: Restored image as numpy array
+
+    Returns:
+        PSNR value in decibels
+    """
+    if not HAS_NUMPY:
+        return 0.0
+
+    # Ensure same size
+    if original.shape != restored.shape:
+        return 0.0
+
+    mse = np.mean((original.astype(float) - restored.astype(float)) ** 2)
+    if mse == 0:
+        return float('inf')
+
+    max_pixel = 255.0
+    psnr = 20 * np.log10(max_pixel / np.sqrt(mse))
+    return float(psnr)
+
+
+def calculate_ssim(
+    original: "np.ndarray",
+    restored: "np.ndarray",
+    window_size: int = 11,
+) -> float:
+    """Calculate Structural Similarity Index between two images.
+
+    SSIM ranges from -1 to 1, where 1 means identical images.
+    Values above 0.9 generally indicate good quality.
+
+    Args:
+        original: Original image as numpy array
+        restored: Restored image as numpy array
+        window_size: Size of the Gaussian window
+
+    Returns:
+        SSIM value (0-1 for typical images)
+    """
+    if not HAS_NUMPY:
+        return 0.0
+
+    # Ensure same size
+    if original.shape != restored.shape:
+        return 0.0
+
+    try:
+        # Try to use scikit-image if available
+        from skimage.metrics import structural_similarity
+        return structural_similarity(
+            original, restored,
+            channel_axis=-1 if len(original.shape) == 3 else None,
+            data_range=255,
+        )
+    except ImportError:
+        pass
+
+    # Fallback: simplified SSIM calculation
+    # Convert to grayscale if color
+    if len(original.shape) == 3:
+        orig_gray = np.mean(original, axis=2)
+        rest_gray = np.mean(restored, axis=2)
+    else:
+        orig_gray = original.astype(float)
+        rest_gray = restored.astype(float)
+
+    # Constants for stability
+    C1 = (0.01 * 255) ** 2
+    C2 = (0.03 * 255) ** 2
+
+    mu_x = np.mean(orig_gray)
+    mu_y = np.mean(rest_gray)
+
+    sigma_x = np.var(orig_gray)
+    sigma_y = np.var(rest_gray)
+    sigma_xy = np.mean((orig_gray - mu_x) * (rest_gray - mu_y))
+
+    ssim = ((2 * mu_x * mu_y + C1) * (2 * sigma_xy + C2)) / \
+           ((mu_x ** 2 + mu_y ** 2 + C1) * (sigma_x + sigma_y + C2))
+
+    return float(ssim)
+
+
+def calculate_sharpness(image: "np.ndarray") -> float:
+    """Calculate sharpness of an image using Laplacian variance.
+
+    Higher values indicate sharper images.
+
+    Args:
+        image: Image as numpy array
+
+    Returns:
+        Sharpness score (Laplacian variance)
+    """
+    if not HAS_NUMPY:
+        return 0.0
+
+    try:
+        import cv2
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
+        return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    except ImportError:
+        # Fallback without OpenCV
+        if len(image.shape) == 3:
+            gray = np.mean(image, axis=2)
+        else:
+            gray = image.astype(float)
+
+        # Simple Laplacian kernel
+        laplacian = np.array([[0, 1, 0], [1, -4, 1], [0, 1, 0]])
+
+        from scipy.ndimage import convolve
+        filtered = convolve(gray, laplacian)
+        return float(np.var(filtered))
+
+
+def estimate_noise_level(image: "np.ndarray") -> float:
+    """Estimate noise level in an image.
+
+    Uses median absolute deviation of high-frequency components.
+
+    Args:
+        image: Image as numpy array
+
+    Returns:
+        Estimated noise standard deviation
+    """
+    if not HAS_NUMPY:
+        return 0.0
+
+    try:
+        import cv2
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
+
+        # High-pass filter to isolate noise
+        blurred = cv2.GaussianBlur(gray.astype(float), (5, 5), 0)
+        noise = gray.astype(float) - blurred
+
+        # Robust noise estimation using MAD
+        mad = np.median(np.abs(noise - np.median(noise)))
+        sigma = 1.4826 * mad  # Convert MAD to standard deviation
+
+        return float(sigma)
+    except ImportError:
+        return 0.0

@@ -14,6 +14,16 @@ from enum import Enum
 
 logger = logging.getLogger(__name__)
 
+# GPU memory optimization
+try:
+    from framewright.utils.gpu_memory_optimizer import GPUMemoryOptimizer
+    _gpu_optimizer = GPUMemoryOptimizer()
+    GPU_OPTIMIZER_AVAILABLE = True
+except ImportError:
+    _gpu_optimizer = None
+    GPU_OPTIMIZER_AVAILABLE = False
+    logger.debug("GPU memory optimizer not available")
+
 
 class FaceModel(Enum):
     """Available face restoration models."""
@@ -73,6 +83,12 @@ class FaceRestorer:
         self.weight = weight
         self._backend = self._detect_backend()
 
+    @staticmethod
+    def _dummy_context():
+        """Dummy context manager for when GPU optimizer is unavailable."""
+        from contextlib import nullcontext
+        return nullcontext()
+
     def _detect_backend(self) -> Optional[str]:
         """Detect available face restoration backend."""
         # Check for GFPGAN
@@ -128,10 +144,15 @@ class FaceRestorer:
         result = FaceRestorationResult(output_dir=output_dir)
 
         if not self._backend:
-            logger.warning("Face restoration not available, copying frames")
-            self._copy_frames(input_dir, output_dir)
-            result.frames_processed = len(list(input_dir.glob("*.png")))
-            return result
+            raise RuntimeError(
+                "CRITICAL: Face restoration backend not available!\n"
+                "You requested face_enhance=True but GFPGAN/CodeFormer is not installed.\n\n"
+                "Install with:\n"
+                "  pip install gfpgan\n"
+                "or:\n"
+                "  pip install codeformer\n\n"
+                "Either install the dependencies or disable face_enhance in your settings."
+            )
 
         input_dir = Path(input_dir)
         output_dir = Path(output_dir)
@@ -271,32 +292,38 @@ class FaceRestorer:
                 bg_upsampler=self._get_bg_upsampler(),
             )
 
-            for i, frame_path in enumerate(frames):
-                try:
-                    # Read image
-                    img = cv2.imread(str(frame_path), cv2.IMREAD_COLOR)
+            # Use GPU memory optimizer if available
+            context_manager = (_gpu_optimizer.managed_memory()
+                             if GPU_OPTIMIZER_AVAILABLE and _gpu_optimizer
+                             else self._dummy_context())
 
-                    # Restore faces
-                    _, _, output = restorer.enhance(
-                        img,
-                        has_aligned=self.aligned,
-                        only_center_face=self.only_center_face,
-                        paste_back=True,
-                    )
+            with context_manager:
+                for i, frame_path in enumerate(frames):
+                    try:
+                        # Read image
+                        img = cv2.imread(str(frame_path), cv2.IMREAD_COLOR)
 
-                    # Save output
-                    output_path = output_dir / frame_path.name
-                    cv2.imwrite(str(output_path), output)
+                        # Restore faces
+                        _, _, output = restorer.enhance(
+                            img,
+                            has_aligned=self.aligned,
+                            only_center_face=self.only_center_face,
+                            paste_back=True,
+                        )
 
-                    result.frames_processed += 1
-                    result.faces_restored += 1
+                        # Save output
+                        output_path = output_dir / frame_path.name
+                        cv2.imwrite(str(output_path), output)
 
-                except Exception as e:
-                    logger.debug(f"Failed to restore {frame_path.name}: {e}")
-                    # Copy original on failure
-                    shutil.copy(frame_path, output_dir / frame_path.name)
-                    result.frames_processed += 1
-                    result.failed_frames += 1
+                        result.frames_processed += 1
+                        result.faces_restored += 1
+
+                    except Exception as e:
+                        logger.debug(f"Failed to restore {frame_path.name}: {e}")
+                        # Copy original on failure
+                        shutil.copy(frame_path, output_dir / frame_path.name)
+                        result.frames_processed += 1
+                        result.failed_frames += 1
 
                 if progress_callback:
                     progress_callback((i + 1) / len(frames))

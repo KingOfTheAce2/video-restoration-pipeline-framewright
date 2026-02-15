@@ -1,0 +1,506 @@
+# FrameWright Hardware-Aware Preset Configuration
+# This file defines presets that automatically adapt to available hardware
+#
+# Structure:
+# - primary: Main quality presets (fast, balanced, best)
+# - hardware_tiers: Hardware-specific adjustments
+# - styles: Content-specific style presets
+# - long_form: Settings for long videos
+
+version: "2.0"
+
+# =============================================================================
+# PRIMARY PRESETS
+# These are the main quality tiers that users select from
+# =============================================================================
+primary:
+  fast:
+    description: "Quick processing with good quality. Ideal for previews."
+    scale_factor: 2
+    model_name: "realesrgan-x2plus"
+    crf: 23
+    preset: "fast"
+    parallel_frames: 4
+    enable_checkpointing: false
+    enable_validation: false
+    enable_tap_denoise: false
+    temporal_method: "blend"
+    encoder_preset: "medium"
+
+  balanced:
+    description: "Good balance of quality and speed. Recommended for most content."
+    scale_factor: 2
+    model_name: "realesrgan-x2plus"
+    crf: 18
+    preset: "medium"
+    parallel_frames: 2
+    enable_checkpointing: true
+    enable_validation: true
+    enable_tap_denoise: true
+    tap_model: "nafnet"
+    tap_strength: 0.5
+    temporal_method: "optical_flow"
+    encoder_preset: "slow"
+
+  best:
+    description: "Maximum quality output. Slower but produces best results."
+    scale_factor: 4
+    model_name: "realesrgan-x4plus"
+    crf: 16
+    preset: "slow"
+    parallel_frames: 1
+    enable_checkpointing: true
+    enable_validation: true
+    min_ssim_threshold: 0.9
+    min_psnr_threshold: 30.0
+    enable_tap_denoise: true
+    tap_model: "restormer"
+    tap_strength: 0.7
+    enable_qp_artifact_removal: true
+    qp_strength: 0.8
+    temporal_method: "cross_attention"
+    cross_attention_window: 7
+    auto_face_restore: true
+    face_model: "codeformer"
+    encoder_preset: "slower"
+
+# =============================================================================
+# HARDWARE TIERS
+# Settings adjusted for different hardware capabilities
+# =============================================================================
+hardware_tiers:
+  cpu_only:
+    description: "CPU-only processing (no GPU available)"
+    max_scale_factor: 2
+    parallel_frames: 1
+    enable_tap_denoise: false
+    enable_qp_artifact_removal: false
+    temporal_method: "blend"
+    sr_model: "realesrgan"
+    tile_size: 128
+    enable_interpolation: false
+    enable_face_restore: false
+    max_resolution: 720
+    force_adjustments:
+      tap_model: null
+      face_model: null
+      enable_ensemble_sr: false
+      enable_diffusion_sr: false
+
+  vram_4gb:
+    description: "Entry-level GPU with 4GB VRAM"
+    max_scale_factor: 2
+    parallel_frames: 1
+    tile_size: 256
+    enable_tap_denoise: true
+    tap_model: "nafnet"
+    enable_interpolation: false
+    enable_face_restore: true
+    face_model: "gfpgan"
+    max_resolution: 1080
+    temporal_method: "optical_flow"
+    force_adjustments:
+      enable_ensemble_sr: false
+      enable_diffusion_sr: false
+      cross_attention_window: 3
+
+  vram_6gb:
+    description: "Mid-range GPU with 6GB VRAM"
+    max_scale_factor: 4
+    parallel_frames: 1
+    tile_size: 384
+    enable_tap_denoise: true
+    tap_model: "nafnet"
+    enable_interpolation: true
+    enable_face_restore: true
+    face_model: "codeformer"
+    max_resolution: 1440
+    temporal_method: "optical_flow"
+    force_adjustments:
+      enable_ensemble_sr: false
+      enable_diffusion_sr: false
+      cross_attention_window: 5
+
+  vram_8gb:
+    description: "Standard GPU with 8GB VRAM (RTX 3060/3070)"
+    max_scale_factor: 4
+    parallel_frames: 2
+    tile_size: 512
+    enable_tap_denoise: true
+    tap_model: "restormer"
+    enable_interpolation: true
+    enable_face_restore: true
+    face_model: "codeformer"
+    max_resolution: 2160
+    temporal_method: "cross_attention"
+    cross_attention_window: 5
+    force_adjustments:
+      enable_ensemble_sr: false
+      enable_diffusion_sr: false
+
+  vram_12gb:
+    description: "High-end GPU with 12GB VRAM (RTX 3080/4070)"
+    max_scale_factor: 4
+    parallel_frames: 2
+    tile_size: 768
+    enable_tap_denoise: true
+    tap_model: "restormer"
+    enable_interpolation: true
+    enable_face_restore: true
+    face_model: "aesrgan"
+    max_resolution: 4320
+    temporal_method: "cross_attention"
+    cross_attention_window: 7
+    force_adjustments:
+      enable_ensemble_sr: true
+      ensemble_models: ["hat", "realesrgan"]
+      enable_diffusion_sr: false
+
+  vram_16gb:
+    description: "Professional GPU with 16GB VRAM (RTX 4080/A4000)"
+    max_scale_factor: 4
+    parallel_frames: 3
+    tile_size: 1024
+    enable_tap_denoise: true
+    tap_model: "restormer"
+    tap_temporal_window: 5
+    enable_interpolation: true
+    enable_face_restore: true
+    face_model: "aesrgan"
+    max_resolution: 8640
+    temporal_method: "hybrid"
+    cross_attention_window: 9
+    force_adjustments:
+      enable_ensemble_sr: true
+      ensemble_models: ["hat", "vrt", "realesrgan"]
+      enable_diffusion_sr: false
+
+  vram_24gb:
+    description: "High-end workstation GPU with 24GB VRAM (RTX 4090/A5000)"
+    max_scale_factor: 4
+    parallel_frames: 4
+    tile_size: null  # No tiling needed
+    enable_tap_denoise: true
+    tap_model: "restormer"
+    tap_temporal_window: 7
+    enable_interpolation: true
+    enable_face_restore: true
+    face_model: "aesrgan"
+    aesrgan_strength: 0.9
+    max_resolution: 8640
+    temporal_method: "hybrid"
+    cross_attention_window: 12
+    enable_raft_flow: true
+    force_adjustments:
+      enable_ensemble_sr: true
+      ensemble_models: ["hat", "vrt", "realesrgan"]
+      enable_diffusion_sr: true
+      diffusion_steps: 15
+
+  vram_32gb_plus:
+    description: "Enterprise GPU with 32GB+ VRAM (RTX 5090/A6000/H100)"
+    max_scale_factor: 4
+    parallel_frames: 4
+    tile_size: null  # No tiling
+    enable_tap_denoise: true
+    tap_model: "restormer"
+    tap_temporal_window: 9
+    enable_interpolation: true
+    target_fps: 60
+    enable_face_restore: true
+    face_model: "aesrgan"
+    aesrgan_strength: 0.95
+    max_resolution: 8640
+    temporal_method: "hybrid"
+    cross_attention_window: 16
+    temporal_window: 16
+    enable_raft_flow: true
+    enable_bidirectional_flow: true
+    force_adjustments:
+      enable_ensemble_sr: true
+      ensemble_models: ["hat", "vrt", "realesrgan"]
+      ensemble_voting: "weighted"
+      enable_diffusion_sr: true
+      diffusion_steps: 30
+      diffusion_guidance: 7.5
+
+# =============================================================================
+# CONTENT STYLES
+# Presets optimized for specific content types
+# =============================================================================
+styles:
+  film:
+    description: "Classic film footage (35mm, 16mm, 8mm)"
+    enable_film_restoration: true
+    preserve_grain: true
+    grain_preservation_level: 0.4
+    enable_auto_enhance: true
+    auto_defect_repair: true
+    scratch_sensitivity: 0.7
+    dust_sensitivity: 0.6
+    enable_stabilization: true
+    stabilization_strength: 0.3
+    enable_scene_intelligence: true
+    temporal_method: "optical_flow"
+    # Authenticity settings
+    preserve_era_character: true
+    enable_authenticity_guard: true
+    max_enhancement_strength: 0.6
+    modifiers:
+      tap_preserve_grain: true
+      face_restore_strength_multiplier: 0.7
+
+  animation:
+    description: "Hand-drawn animation and anime"
+    model_name: "realesr-animevideov3"
+    enable_tap_denoise: true
+    tap_model: "nafnet"
+    tap_strength: 0.4
+    enable_face_restore: false  # Avoid for drawn faces
+    temporal_method: "cross_attention"
+    cross_attention_window: 5
+    # Line art preservation
+    enable_edge_enhancement: true
+    edge_enhancement_strength: 0.3
+    modifiers:
+      preserve_flat_colors: true
+      disable_face_detection: true
+
+  home_video:
+    description: "VHS, camcorder, and home recordings"
+    enable_vhs_restoration: true
+    vhs_remove_tracking: true
+    vhs_remove_dropout: true
+    vhs_fix_chroma: true
+    vhs_tbc_simulation: true
+    vhs_remove_dot_crawl: true
+    enable_tap_denoise: true
+    tap_model: "nafnet"
+    tap_strength: 0.6
+    temporal_method: "optical_flow"
+    enable_audio_enhance: true
+    enable_face_restore: true
+    modifiers:
+      enable_deinterlace: true
+      deinterlace_method: "yadif"
+
+  archive:
+    description: "Historical and archival footage requiring careful restoration"
+    enable_film_restoration: true
+    enable_frame_generation: true
+    frame_gen_model: "optical_flow_warp"
+    max_gap_frames: 10
+    enable_deduplication: true
+    deduplication_threshold: 0.98
+    enable_tap_denoise: true
+    tap_model: "restormer"
+    tap_strength: 0.8
+    tap_preserve_grain: true
+    enable_auto_enhance: true
+    auto_defect_repair: true
+    scratch_sensitivity: 0.85
+    dust_sensitivity: 0.75
+    temporal_method: "hybrid"
+    cross_attention_window: 9
+    temporal_blend_strength: 0.6
+    # Maximum authenticity preservation
+    preserve_era_character: true
+    enable_authenticity_guard: true
+    auto_detect_era: true
+    modifiers:
+      min_ssim_threshold: 0.9
+      min_psnr_threshold: 32.0
+
+  broadcast:
+    description: "TV broadcast recordings"
+    enable_tap_denoise: true
+    tap_model: "nafnet"
+    tap_strength: 0.5
+    enable_qp_artifact_removal: true
+    qp_auto_detect: true
+    qp_strength: 0.6
+    enable_deinterlace: true
+    deinterlace_method: "bwdif"
+    temporal_method: "optical_flow"
+    enable_face_restore: true
+    modifiers:
+      scale_factor_cap: 2
+
+  documentary:
+    description: "Documentary footage with mixed content"
+    enable_tap_denoise: true
+    tap_model: "nafnet"
+    tap_strength: 0.5
+    enable_scene_intelligence: true
+    scene_adaptive_settings: true
+    enable_audio_enhance: true
+    preserve_era_character: true
+    auto_detect_era: true
+    temporal_method: "optical_flow"
+    enable_face_restore: true
+    face_model: "codeformer"
+    modifiers:
+      codeformer_fidelity: 0.8
+
+  gaming:
+    description: "Game footage and let's plays"
+    enable_qp_artifact_removal: true
+    qp_strength: 0.8
+    enable_tap_denoise: true
+    tap_model: "nafnet"
+    tap_strength: 0.3
+    temporal_method: "blend"
+    enable_face_restore: false
+    modifiers:
+      preserve_text: true
+      scale_factor_cap: 2
+
+  web_video:
+    description: "YouTube, streaming, and web content"
+    enable_qp_artifact_removal: true
+    qp_auto_detect: true
+    qp_strength: 0.7
+    enable_tap_denoise: true
+    tap_model: "nafnet"
+    tap_strength: 0.4
+    temporal_method: "optical_flow"
+    enable_face_restore: true
+    face_model: "gfpgan"
+    modifiers: {}
+
+# =============================================================================
+# LONG FORM VIDEO SETTINGS
+# Special handling for extended videos (movies, documentaries)
+# =============================================================================
+long_form:
+  # Chunking settings
+  chunk_size: 50  # Frames per chunk
+  chunk_overlap: 4  # Overlap frames for seamless transitions
+
+  # Checkpoint frequency
+  checkpoint_interval: 100
+  auto_checkpoint: true
+
+  # Memory management
+  clear_cache_interval: 500  # Clear VRAM cache every N frames
+  max_memory_usage_percent: 85
+
+  # Resume support
+  enable_resume: true
+  save_partial_output: true
+
+  # Quality consistency
+  enable_quality_tracking: true
+  quality_check_interval: 200
+  max_quality_variance: 0.05
+
+  # Scene detection
+  enable_scene_detection: true
+  scene_change_threshold: 0.3
+
+  # Temporal window adjustment
+  temporal_window_scale: 1.0  # Scale factor for temporal windows
+  max_temporal_window: 16
+
+  # Duration thresholds (in minutes)
+  thresholds:
+    short: 5       # < 5 min: normal processing
+    medium: 30     # 5-30 min: enable chunking
+    long: 120      # 30-120 min: aggressive chunking
+    very_long: 240 # > 2 hours: maximum optimization
+
+# =============================================================================
+# HARDWARE DETECTION MAPPINGS
+# Maps detected hardware characteristics to tier names
+# =============================================================================
+hardware_detection:
+  # GPU VRAM thresholds (in GB)
+  vram_thresholds:
+    - max_vram: 0
+      tier: "cpu_only"
+    - max_vram: 4
+      tier: "vram_4gb"
+    - max_vram: 6
+      tier: "vram_6gb"
+    - max_vram: 8
+      tier: "vram_8gb"
+    - max_vram: 12
+      tier: "vram_12gb"
+    - max_vram: 16
+      tier: "vram_16gb"
+    - max_vram: 24
+      tier: "vram_24gb"
+    - max_vram: 999
+      tier: "vram_32gb_plus"
+
+  # GPU architecture bonuses (extra effective VRAM for efficient architectures)
+  architecture_bonuses:
+    ampere: 1.0      # RTX 30xx
+    ada_lovelace: 1.2  # RTX 40xx
+    hopper: 1.5      # H100
+    blackwell: 2.0   # RTX 50xx (estimated)
+
+  # RAM requirements per tier (in GB)
+  ram_requirements:
+    cpu_only: 8
+    vram_4gb: 8
+    vram_6gb: 16
+    vram_8gb: 16
+    vram_12gb: 32
+    vram_16gb: 32
+    vram_24gb: 64
+    vram_32gb_plus: 64
+
+# =============================================================================
+# QUALITY TIER MAPPINGS
+# Maps primary preset names to internal quality levels
+# =============================================================================
+quality_tiers:
+  fast:
+    level: 1
+    target_time_multiplier: 0.5  # Aim for 0.5x realtime
+    quality_priority: "speed"
+
+  balanced:
+    level: 2
+    target_time_multiplier: 2.0  # 2x realtime is acceptable
+    quality_priority: "balanced"
+
+  best:
+    level: 3
+    target_time_multiplier: 10.0  # Quality over speed
+    quality_priority: "quality"
+
+# =============================================================================
+# MERGE RULES
+# Defines how settings are combined when merging presets
+# =============================================================================
+merge_rules:
+  # Settings that take the minimum value
+  min_merge:
+    - "max_scale_factor"
+    - "max_resolution"
+    - "parallel_frames"
+    - "tile_size"
+    - "cross_attention_window"
+    - "temporal_window"
+
+  # Settings that take the maximum value
+  max_merge:
+    - "min_ssim_threshold"
+    - "min_psnr_threshold"
+
+  # Settings from hardware tier override base preset
+  hardware_override:
+    - "tile_size"
+    - "enable_ensemble_sr"
+    - "enable_diffusion_sr"
+    - "max_resolution"
+
+  # Settings from style that override others
+  style_override:
+    - "model_name"
+    - "enable_vhs_restoration"
+    - "enable_film_restoration"
+    - "preserve_era_character"
+    - "enable_authenticity_guard"

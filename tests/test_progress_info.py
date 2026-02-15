@@ -252,11 +252,14 @@ class TestFramesPerSecond:
 
     def test_frames_per_second_zero_elapsed(self):
         """Test fps returns 0 when elapsed is zero."""
+        # Set explicit elapsed and stage_start_time=None to prevent
+        # __post_init__ from recalculating elapsed from time.time()
         info = ProgressInfo(
             stage="enhance",
             progress=0.5,
             frames_completed=100,
             frames_total=200,
+            stage_start_time=None,
             elapsed_seconds=0.0
         )
 

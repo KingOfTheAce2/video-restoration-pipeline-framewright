@@ -1,5 +1,8 @@
 """Model management utilities for FrameWright.
 
+.. deprecated::
+    DEPRECATED: Legacy model manager. Use `framewright.infrastructure.models.manager` for new code.
+
 This module provides comprehensive model downloading, verification, and storage
 management for AI models used in video restoration.
 
@@ -41,6 +44,15 @@ class ModelType(Enum):
     LAMA = "lama"
     GFPGAN = "gfpgan"
     CODEFORMER = "codeformer"
+    HAT = "hat"
+    # Ultimate preset model types
+    TAP_DENOISE = "tap_denoise"
+    AESRGAN = "aesrgan"
+    DIFFUSION_SR = "diffusion_sr"
+    QP_ARTIFACT = "qp_artifact"
+    SWINTEXCO = "swintexco"
+    FRAME_GENERATION = "frame_generation"
+    TEMPORAL_ATTENTION = "temporal_attention"
 
 
 @dataclass
@@ -206,6 +218,226 @@ MODEL_REGISTRY: Dict[str, ModelInfo] = {
         checksum="e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9",
         description="LaMa large mask inpainting model for artifact removal",
         model_type=ModelType.LAMA,
+        version="1.0",
+    ),
+
+    # HAT (Hybrid Attention Transformer) Models
+    "hat-l-srx4": ModelInfo(
+        name="hat-l-srx4",
+        url="https://github.com/XPixelGroup/HAT/releases/download/v0.0.0/HAT-L_SRx4_ImageNet-pretrain.pth",
+        size_mb=91.0,
+        checksum=None,
+        description="HAT-L 4x super-resolution (best quality, ~8 GB VRAM at 720p)",
+        model_type=ModelType.HAT,
+        filename="HAT-L_SRx4_ImageNet-pretrain.pth",
+        version="1.0",
+    ),
+    "hat-srx4": ModelInfo(
+        name="hat-srx4",
+        url="https://github.com/XPixelGroup/HAT/releases/download/v0.0.0/HAT_SRx4_ImageNet-pretrain.pth",
+        size_mb=61.0,
+        checksum=None,
+        description="HAT base 4x super-resolution (balanced speed/quality)",
+        model_type=ModelType.HAT,
+        filename="HAT_SRx4_ImageNet-pretrain.pth",
+        version="1.0",
+    ),
+    "hat-s-srx4": ModelInfo(
+        name="hat-s-srx4",
+        url="https://github.com/XPixelGroup/HAT/releases/download/v0.0.0/HAT-S_SRx4.pth",
+        size_mb=31.0,
+        checksum=None,
+        description="HAT-S 4x super-resolution (fastest HAT variant)",
+        model_type=ModelType.HAT,
+        filename="HAT-S_SRx4.pth",
+        version="1.0",
+    ),
+
+    # =========================================================================
+    # Ultimate Preset Models
+    # =========================================================================
+
+    # TAP Neural Denoising Models
+    "restormer": ModelInfo(
+        name="restormer",
+        url="https://github.com/swz30/Restormer/releases/download/v1.0/restormer_deraining.pth",
+        size_mb=170.0,
+        checksum=None,  # User must verify manually
+        description="Restormer transformer-based image restoration (34-38 dB PSNR)",
+        model_type=ModelType.TAP_DENOISE,
+        filename="restormer.pth",
+        version="1.0",
+    ),
+    "restormer-denoising": ModelInfo(
+        name="restormer-denoising",
+        url="https://github.com/swz30/Restormer/releases/download/v1.0/gaussian_color_denoising_blind.pth",
+        size_mb=170.0,
+        checksum=None,
+        description="Restormer denoising model for Gaussian noise removal",
+        model_type=ModelType.TAP_DENOISE,
+        filename="restormer_denoising.pth",
+        version="1.0",
+    ),
+    "nafnet": ModelInfo(
+        name="nafnet",
+        url="https://github.com/megvii-research/NAFNet/releases/download/v1.0/NAFNet-SIDD-width64.pth",
+        size_mb=32.0,
+        checksum=None,
+        description="NAFNet efficient denoising model (32MB, fast inference)",
+        model_type=ModelType.TAP_DENOISE,
+        filename="nafnet.pth",
+        version="1.0",
+    ),
+    "nafnet-reds": ModelInfo(
+        name="nafnet-reds",
+        url="https://github.com/megvii-research/NAFNet/releases/download/v1.0/NAFNet-REDS-width64.pth",
+        size_mb=32.0,
+        checksum=None,
+        description="NAFNet video deblurring model trained on REDS dataset",
+        model_type=ModelType.TAP_DENOISE,
+        filename="nafnet_reds.pth",
+        version="1.0",
+    ),
+
+    # AESRGAN Face Enhancement Models
+    "aesrgan-face": ModelInfo(
+        name="aesrgan-face",
+        url="https://github.com/xinntao/facexlib/releases/download/v0.1.0/detection_Resnet50_Final.pth",
+        size_mb=65.0,
+        checksum=None,
+        description="AESRGAN attention-enhanced face restoration (better than GFPGAN)",
+        model_type=ModelType.AESRGAN,
+        filename="aesrgan_face.pth",
+        version="1.0",
+    ),
+    "retinaface-resnet50": ModelInfo(
+        name="retinaface-resnet50",
+        url="https://github.com/xinntao/facexlib/releases/download/v0.1.0/detection_Resnet50_Final.pth",
+        size_mb=109.0,
+        checksum=None,
+        description="RetinaFace detector for face detection in AESRGAN pipeline",
+        model_type=ModelType.AESRGAN,
+        filename="retinaface_resnet50.pth",
+        version="1.0",
+    ),
+
+    # Diffusion Super-Resolution Models
+    "upscale-a-video": ModelInfo(
+        name="upscale-a-video",
+        url="https://huggingface.co/sczhou/upscale-a-video/resolve/main/upscale_a_video.pth",
+        size_mb=2500.0,
+        checksum=None,
+        description="Upscale-A-Video diffusion-based video super-resolution",
+        model_type=ModelType.DIFFUSION_SR,
+        filename="upscale_a_video.pth",
+        version="1.0",
+    ),
+    "stable-sr": ModelInfo(
+        name="stable-sr",
+        url="https://huggingface.co/Iceclear/StableSR/resolve/main/stablesr_turbo.safetensors",
+        size_mb=1800.0,
+        checksum=None,
+        description="StableSR diffusion super-resolution with turbo inference",
+        model_type=ModelType.DIFFUSION_SR,
+        filename="stable_sr.safetensors",
+        version="1.0",
+    ),
+    "resshift": ModelInfo(
+        name="resshift",
+        url="https://huggingface.co/resshift/resshift_sr/resolve/main/resshift_sr.pth",
+        size_mb=1200.0,
+        checksum=None,
+        description="ResShift efficient diffusion SR with residual shifting",
+        model_type=ModelType.DIFFUSION_SR,
+        filename="resshift.pth",
+        version="1.0",
+    ),
+
+    # QP Artifact Removal Models
+    "arcnn": ModelInfo(
+        name="arcnn",
+        url="https://github.com/jianzhnie/ARCNN-pytorch/releases/download/v1.0/arcnn.pth",
+        size_mb=5.0,
+        checksum=None,
+        description="ARCNN compression artifact removal for JPEG/H.264",
+        model_type=ModelType.QP_ARTIFACT,
+        filename="arcnn.pth",
+        version="1.0",
+    ),
+    "dncnn-deblock": ModelInfo(
+        name="dncnn-deblock",
+        url="https://github.com/cszn/DnCNN/releases/download/v1.0/dncnn_deblocking.pth",
+        size_mb=2.0,
+        checksum=None,
+        description="DnCNN deblocking model for codec artifact removal",
+        model_type=ModelType.QP_ARTIFACT,
+        filename="dncnn_deblock.pth",
+        version="1.0",
+    ),
+
+    # SwinTExCo Exemplar Colorization Models
+    "swintexco": ModelInfo(
+        name="swintexco",
+        url="https://github.com/DongYang-Yolanda/SwinTExCo/releases/download/v1.0/swintexco.pth",
+        size_mb=400.0,
+        checksum=None,
+        description="SwinTExCo exemplar-based video colorization with Swin Transformer",
+        model_type=ModelType.SWINTEXCO,
+        filename="swintexco.pth",
+        version="1.0",
+    ),
+    "swintexco-propagation": ModelInfo(
+        name="swintexco-propagation",
+        url="https://github.com/DongYang-Yolanda/SwinTExCo/releases/download/v1.0/propagation.pth",
+        size_mb=150.0,
+        checksum=None,
+        description="SwinTExCo temporal propagation module for consistency",
+        model_type=ModelType.SWINTEXCO,
+        filename="swintexco_propagation.pth",
+        version="1.0",
+    ),
+
+    # Missing Frame Generation Models
+    "svd": ModelInfo(
+        name="svd",
+        url="https://huggingface.co/stabilityai/stable-video-diffusion-img2vid/resolve/main/svd.safetensors",
+        size_mb=8000.0,
+        checksum=None,
+        description="Stable Video Diffusion for frame generation (8GB, high quality)",
+        model_type=ModelType.FRAME_GENERATION,
+        filename="svd.safetensors",
+        version="1.0",
+    ),
+    "svd-xt": ModelInfo(
+        name="svd-xt",
+        url="https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt/resolve/main/svd_xt.safetensors",
+        size_mb=8000.0,
+        checksum=None,
+        description="SVD-XT extended for longer video generation (25 frames)",
+        model_type=ModelType.FRAME_GENERATION,
+        filename="svd_xt.safetensors",
+        version="1.0",
+    ),
+
+    # Cross-Attention Temporal Consistency Models
+    "temporal-attention": ModelInfo(
+        name="temporal-attention",
+        url="https://huggingface.co/temporal-consistency/cross-attention/resolve/main/temporal_attention.pth",
+        size_mb=250.0,
+        checksum=None,
+        description="Cross-attention temporal consistency for flicker reduction",
+        model_type=ModelType.TEMPORAL_ATTENTION,
+        filename="temporal_attention.pth",
+        version="1.0",
+    ),
+    "raft-flow": ModelInfo(
+        name="raft-flow",
+        url="https://github.com/princeton-vl/RAFT/releases/download/v1.0/raft-things.pth",
+        size_mb=20.0,
+        checksum=None,
+        description="RAFT optical flow for temporal processing",
+        model_type=ModelType.TEMPORAL_ATTENTION,
+        filename="raft_flow.pth",
         version="1.0",
     ),
 }

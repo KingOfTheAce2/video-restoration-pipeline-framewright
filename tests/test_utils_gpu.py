@@ -129,14 +129,15 @@ class TestCalculateOptimalTileSize:
     @patch('framewright.utils.gpu.get_gpu_memory_info')
     def test_no_tiling_needed(self, mock_memory):
         """Test when no tiling is needed (enough VRAM)."""
-        mock_memory.return_value = {"free_mb": 16000}
+        mock_memory.return_value = {"free_mb": 24000}
 
         tile_size = calculate_optimal_tile_size(
             frame_resolution=(1920, 1080),
             scale_factor=4,
         )
 
-        # With 16GB VRAM, should not need tiling for 1080p
+        # With 24GB free VRAM (usable=16.8GB), should not need tiling for 1080p@4x
+        # Output: 7680x4320 = 33.18MP, estimated = 33.18 * 450 = 14929MB < 16800MB
         assert tile_size == 0  # 0 means no tiling
 
     @patch('framewright.utils.gpu.get_gpu_memory_info')

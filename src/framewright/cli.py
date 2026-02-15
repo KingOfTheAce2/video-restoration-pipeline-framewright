@@ -47,24 +47,36 @@ class Colors:
 
 def print_colored(message: str, color: str = Colors.OKBLUE):
     """Print colored message to console."""
-    print(f"{color}{message}{Colors.ENDC}")
+    try:
+        print(f"{color}{message}{Colors.ENDC}")
+    except UnicodeEncodeError:
+        # Fallback for terminals that can't handle unicode
+        print(message.encode('ascii', errors='replace').decode('ascii'))
 
 
 def print_header():
     """Print CLI header."""
+    # Use ASCII-safe box drawing for Windows compatibility
     header = """
-    ╔═══════════════════════════════════════════╗
-    ║       FrameWright v1.0.0-dev              ║
-    ║    Video Restoration Pipeline             ║
-    ╚═══════════════════════════════════════════╝
+    +-------------------------------------------+
+    |       FrameWright v1.0.0-dev              |
+    |    Video Restoration Pipeline             |
+    +-------------------------------------------+
     """
     print_colored(header, Colors.HEADER)
 
 
 def validate_input(input_path: str) -> Path:
-    """Validate input file or URL."""
+    """Validate input file or URL.
+
+    For URLs (http/https), returns a PurePosixPath to preserve
+    forward slashes in the URL on all platforms.
+    For local files, validates existence and returns the Path.
+    """
     if input_path.startswith(('http://', 'https://')):
-        return Path(input_path)
+        # Use PurePosixPath to preserve forward slashes on Windows
+        from pathlib import PurePosixPath
+        return PurePosixPath(input_path)
 
     path = Path(input_path)
     if not path.exists():
@@ -211,6 +223,179 @@ def _load_effective_config(args) -> Dict[str, Any]:
     return {}
 
 
+def _format_size(size_bytes: int) -> str:
+    """Format bytes to human readable size."""
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+        if abs(size_bytes) < 1024.0:
+            return f"{size_bytes:.1f} {unit}"
+        size_bytes /= 1024.0
+    return f"{size_bytes:.1f} PB"
+
+
+def _format_duration_dry(seconds: float) -> str:
+    """Format seconds to human readable duration."""
+    hours, remainder = divmod(int(seconds), 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours > 0:
+        return f"{hours}h {minutes:02d}m"
+    elif minutes > 0:
+        return f"{minutes}m {secs:02d}s"
+    return f"{secs}s"
+
+
+def _format_number(num: int) -> str:
+    """Format number with comma separators."""
+    return f"{num:,}"
+
+
+def print_dry_run_output(args, source: str, output_path: Path, output_format: str):
+    """Print detailed dry-run analysis with improved formatting."""
+    from .dry_run import perform_dry_run
+    from .config import PRESETS
+
+    input_path = Path(source) if not source.startswith(('http://', 'https://')) else None
+
+    if input_path is None:
+        print_colored("\nDRY RUN - Cannot analyze URL sources in detail", Colors.WARNING)
+        print_colored("Run without --dry-run to process the URL.", Colors.OKCYAN)
+        return
+
+    if not input_path.exists():
+        print_colored(f"\nError: Input file not found: {source}", Colors.FAIL)
+        sys.exit(1)
+
+    try:
+        # Perform dry-run analysis
+        result = perform_dry_run(
+            video_path=input_path,
+            output_path=output_path,
+            scale_factor=args.scale,
+            model_name=args.model,
+            crf=args.quality,
+            output_format=output_format,
+            enable_interpolation=args.enable_rife,
+            target_fps=args.target_fps,
+            enable_auto_enhance=args.auto_enhance,
+            enable_face_restore=not getattr(args, 'no_face_restore', False),
+        )
+
+        # Print header
+        print()
+        print_colored("=" * 60, Colors.HEADER)
+        print_colored("  DRY RUN - No changes will be made", Colors.HEADER)
+        print_colored("=" * 60, Colors.HEADER)
+        print()
+
+        # Input info
+        width, height = result.input_resolution
+        file_size = input_path.stat().st_size
+        print_colored("Input:", Colors.BOLD)
+        print(f"  {input_path.name}")
+        print(f"  {width}x{height}, {result.input_fps:.1f}fps, "
+              f"{_format_duration_dry(result.input_duration_seconds)}, "
+              f"{_format_size(file_size)}")
+        print()
+
+        # Output info
+        out_w, out_h = result.output_resolution
+        print_colored("Output:", Colors.BOLD)
+        print(f"  {output_path}")
+        print(f"  {out_w}x{out_h}, {result.output_fps:.1f}fps, {output_format.upper()}")
+        print()
+
+        # Processing plan
+        print_colored("Processing Plan:", Colors.BOLD)
+        print(f"  - Frames to extract: {_format_number(result.input_frame_count)}")
+        print(f"  - Enhancement: {args.model} ({args.scale}x upscale)")
+
+        if not getattr(args, 'no_face_restore', False) and result.detected_faces_estimate > 0:
+            face_model = getattr(args, 'face_model', 'GFPGAN')
+            print(f"  - Face restoration: {face_model.upper()} (~{_format_number(result.detected_faces_estimate)} faces)")
+        else:
+            print(f"  - Face restoration: OFF")
+
+        if args.enable_rife:
+            target = args.target_fps or result.output_fps
+            print(f"  - Frame interpolation: RIFE -> {target:.0f}fps ({_format_number(result.output_frame_count)} frames)")
+        else:
+            print(f"  - Frame interpolation: OFF")
+
+        if args.auto_enhance:
+            print(f"  - Auto-enhance: ON (defect repair, color correction)")
+
+        if getattr(args, 'colorize', False):
+            colorize_model = getattr(args, 'colorize_model', 'ddcolor')
+            print(f"  - Colorization: {colorize_model.upper()}")
+
+        if getattr(args, 'tap_denoise', False):
+            tap_model = getattr(args, 'tap_model', 'restormer')
+            print(f"  - Neural denoising: {tap_model.upper()}")
+
+        print()
+
+        # Estimated resources
+        print_colored("Estimated Resources:", Colors.BOLD)
+
+        # Time estimate
+        gpu_name = result.hardware.gpu_name if result.hardware.has_gpu else "CPU"
+        time_str = result.time_estimate.time_range_str
+        print(f"  - Processing time: ~{time_str} ({gpu_name})")
+
+        # Disk space
+        temp_gb = result.temp_disk_usage_bytes / (1024**3)
+        output_gb = result.output_disk_usage_bytes / (1024**3)
+        print(f"  - Temp disk space: ~{temp_gb:.1f} GB")
+        print(f"  - Output size: ~{output_gb:.1f} GB")
+
+        # VRAM
+        if result.hardware.has_gpu:
+            vram_needed = result.hardware.vram_required_mb / 1024
+            vram_avail = result.hardware.vram_available_mb / 1024
+            status = "OK" if result.hardware.vram_sufficient else "LOW"
+            print(f"  - VRAM needed: ~{vram_needed:.1f} GB / {vram_avail:.1f} GB available [{status}]")
+        print()
+
+        # Warnings
+        if result.warnings:
+            print_colored("Warnings:", Colors.WARNING)
+            for warning in result.warnings:
+                print(f"  - {warning}")
+            print()
+
+        # Blocking issues
+        if result.blocking_issues:
+            print_colored("BLOCKING ISSUES:", Colors.FAIL)
+            for issue in result.blocking_issues:
+                print(f"  - {issue}")
+            print()
+
+        # Suggestions
+        print_colored("Tips:", Colors.OKCYAN)
+        preset = getattr(args, 'preset', None)
+        if preset != 'fast' and result.time_estimate.total_hours > 2:
+            print("  - Use --preset fast for quicker results (lower quality)")
+        if not result.hardware.vram_sufficient and result.hardware.has_gpu:
+            tile = result.hardware.recommended_tile_size or 256
+            print(f"  - Use --tile-size {tile} if you run out of VRAM")
+        if args.scale == 4 and result.time_estimate.total_hours > 4:
+            print("  - Use --scale 2 to reduce processing time by ~75%")
+        if not args.enable_rife and result.input_fps < 30:
+            print(f"  - Use --enable-rife --target-fps 60 for smoother playback")
+        if result.hardware.gpu_count > 1 and not getattr(args, 'multi_gpu', False):
+            print(f"  - Use --multi-gpu to utilize all {result.hardware.gpu_count} GPUs")
+        print()
+
+        # Final instruction
+        if result.can_proceed:
+            print_colored("Run without --dry-run to start processing.", Colors.OKGREEN)
+        else:
+            print_colored("Cannot proceed due to blocking issues above.", Colors.FAIL)
+
+    except Exception as e:
+        print_colored(f"\nDry-run analysis failed: {e}", Colors.FAIL)
+        print_colored("Run without --dry-run to attempt processing anyway.", Colors.WARNING)
+
+
 def restore_video(args):
     """Full video restoration workflow with actual implementation."""
     from .config import Config
@@ -223,26 +408,64 @@ def restore_video(args):
     # Ensure output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print_colored(f"\n📁 Output will be saved to: {output_path}", Colors.OKCYAN)
-    print_colored(f"📦 Output format: {output_format.upper()}", Colors.OKCYAN)
+    print_colored(f"\n[Output] Will be saved to: {output_path}", Colors.OKCYAN)
+    print_colored(f"[Format] {output_format.upper()}", Colors.OKCYAN)
+
+    # Load user profile if specified
+    user_profile_settings: Dict[str, Any] = {}
+    user_profile_name = getattr(args, 'user_profile', None)
+    if user_profile_name:
+        try:
+            from .utils.profiles import ProfileManager
+            profile_manager = ProfileManager()
+            profile_data = profile_manager.load_profile_raw(user_profile_name)
+            user_profile_settings = profile_data.get("config", {})
+            print_colored(f"[Profile] Using saved profile: {user_profile_name}", Colors.OKCYAN)
+        except FileNotFoundError:
+            print_colored(f"Error: User profile not found: {user_profile_name}", Colors.FAIL)
+            print_colored("List available profiles with: framewright profile list", Colors.WARNING)
+            sys.exit(1)
+        except Exception as e:
+            print_colored(f"Error loading profile: {e}", Colors.FAIL)
+            sys.exit(1)
 
     # Determine input source
     if args.input:
         source = args.input
-        if not Path(source).exists():
-            print_colored(f"Error: Input file not found: {source}", Colors.FAIL)
-            sys.exit(1)
     elif args.url:
         source = args.url
     else:
         print_colored("Error: Please provide --input or --url", Colors.FAIL)
         sys.exit(1)
 
+    # Handle dry-run mode - show analysis without processing
+    if getattr(args, 'dry_run', False):
+        print_dry_run_output(args, source, output_path, output_format)
+        return
+
+    # Validate input path for non-URL sources
+    if args.input and not Path(source).exists():
+        print_colored(f"Error: Input file not found: {source}", Colors.FAIL)
+        sys.exit(1)
+
+    # Helper to get value: CLI arg > user profile > default
+    def get_setting(attr_name: str, profile_key: str, default: Any) -> Any:
+        """Get setting with priority: explicit CLI arg > profile > default."""
+        cli_value = getattr(args, attr_name, None)
+        # Check if CLI arg was explicitly provided (not just default)
+        # For boolean store_true args, default is False
+        if cli_value is not None and cli_value != default:
+            return cli_value
+        if profile_key in user_profile_settings:
+            return user_profile_settings[profile_key]
+        return cli_value if cli_value is not None else default
+
     # Determine model based on scale
-    model_name = args.model
-    if args.scale == 2 and 'x4' in model_name:
+    scale = get_setting('scale', 'scale_factor', 2)
+    model_name = get_setting('model', 'model_name', 'realesrgan-x4plus')
+    if scale == 2 and 'x4' in model_name:
         model_name = 'realesrgan-x2plus'
-        print_colored(f"ℹ️  Using {model_name} for 2x scale", Colors.WARNING)
+        print_colored(f"[Info] Using {model_name} for 2x scale", Colors.WARNING)
 
     try:
         # Create configuration
@@ -252,32 +475,69 @@ def restore_video(args):
         if hasattr(args, 'model_dir') and args.model_dir:
             model_dir = Path(args.model_dir).expanduser()
 
+        # Get settings with profile override support
+        quality = get_setting('quality', 'crf', 18)
+        enable_rife = get_setting('enable_rife', 'enable_interpolation', False)
+        target_fps = get_setting('target_fps', 'target_fps', None)
+        rife_model = get_setting('rife_model', 'rife_model', 'rife-v4.6')
+        auto_enhance = get_setting('auto_enhance', 'enable_auto_enhance', False)
+        scratch_sens = get_setting('scratch_sensitivity', 'scratch_sensitivity', 0.5)
+        grain_red = get_setting('grain_reduction', 'grain_reduction', 0.3)
+        colorize = get_setting('colorize', 'enable_colorization', False)
+        colorize_model = get_setting('colorize_model', 'colorization_model', 'ddcolor')
+        remove_wm = get_setting('remove_watermark', 'enable_watermark_removal', False)
+
         config = Config(
             project_dir=work_dir,
             output_dir=output_dir,
-            scale_factor=args.scale,
+            scale_factor=scale,
             model_name=model_name,
-            crf=args.quality,
+            crf=quality,
             output_format=output_format,
             enable_checkpointing=True,
             enable_validation=True,
             enable_deduplication=getattr(args, 'deduplicate', False),
             deduplication_threshold=getattr(args, 'dedup_threshold', 0.98),
-            enable_interpolation=args.enable_rife,
-            target_fps=args.target_fps,
-            rife_model=args.rife_model,
-            enable_auto_enhance=args.auto_enhance,
+            enable_interpolation=enable_rife,
+            target_fps=target_fps,
+            rife_model=rife_model,
+            enable_auto_enhance=auto_enhance,
             auto_face_restore=not args.no_face_restore if hasattr(args, 'no_face_restore') else True,
             auto_defect_repair=not args.no_defect_repair if hasattr(args, 'no_defect_repair') else True,
-            scratch_sensitivity=args.scratch_sensitivity,
-            grain_reduction=args.grain_reduction,
+            scratch_sensitivity=scratch_sens,
+            grain_reduction=grain_red,
             model_dir=model_dir if model_dir else Path.home() / ".framewright" / "models",
-            enable_colorization=getattr(args, 'colorize', False),
-            colorization_model=getattr(args, 'colorize_model', 'ddcolor'),
-            enable_watermark_removal=getattr(args, 'remove_watermark', False),
+            enable_colorization=colorize,
+            colorization_model=colorize_model,
+            enable_watermark_removal=remove_wm,
             watermark_auto_detect=getattr(args, 'watermark_auto_detect', False),
             gpu_id=getattr(args, 'gpu', None),
             enable_multi_gpu=getattr(args, 'multi_gpu', False),
+            # Ultimate preset features
+            enable_tap_denoise=getattr(args, 'tap_denoise', False),
+            tap_model=getattr(args, 'tap_model', 'restormer'),
+            tap_strength=getattr(args, 'tap_strength', 1.0),
+            tap_preserve_grain=getattr(args, 'tap_preserve_grain', False),
+            sr_model='diffusion' if getattr(args, 'diffusion_sr', False) else 'realesrgan',
+            diffusion_steps=getattr(args, 'diffusion_steps', 20),
+            diffusion_guidance=getattr(args, 'diffusion_guidance', 7.5),
+            face_model=getattr(args, 'face_model', 'gfpgan'),
+            aesrgan_strength=getattr(args, 'aesrgan_strength', 0.8),
+            enable_qp_artifact_removal=getattr(args, 'qp_artifact_removal', False),
+            qp_strength=getattr(args, 'qp_strength', 1.0),
+            colorization_reference_images=[Path(p) for p in (getattr(args, 'colorize_reference', None) or [])],
+            colorization_temporal_fusion=getattr(args, 'colorize_temporal_fusion', True),
+            enable_reference_enhance=getattr(args, 'reference_enhance', False),
+            reference_images_dir=Path(args.reference_dir) if getattr(args, 'reference_dir', None) else None,
+            reference_strength=getattr(args, 'reference_strength', 0.35),
+            reference_guidance_scale=getattr(args, 'reference_guidance', 7.5),
+            reference_ip_adapter_scale=getattr(args, 'reference_ip_scale', 0.6),
+            enable_frame_generation=getattr(args, 'generate_frames', False),
+            frame_gen_model=getattr(args, 'frame_gen_model', 'interpolate_blend'),
+            max_gap_frames=getattr(args, 'max_gap_frames', 10),
+            temporal_method=getattr(args, 'temporal_method', 'optical_flow'),
+            cross_attention_window=getattr(args, 'cross_attention_window', 7),
+            temporal_blend_strength=getattr(args, 'temporal_blend_strength', 0.8),
         )
 
         # Create restorer with progress callback
@@ -405,9 +665,7 @@ def extract_frames(args):
 
 
 def enhance_frames(args):
-    """Enhance extracted frames using Real-ESRGAN."""
-    import subprocess
-
+    """Enhance extracted frames — dispatches to the appropriate SR backend."""
     print_colored(f"\nEnhancing frames with {args.model} model (scale: {args.scale}x)", Colors.OKBLUE)
     input_dir = Path(args.input)
     output_dir = Path(args.output)
@@ -430,51 +688,242 @@ def enhance_frames(args):
 
     print_colored(f"  Found {len(frames)} frames to enhance", Colors.OKCYAN)
 
-    # Determine model name
-    model_name = args.model
-    if scale == 2 and 'x4' in model_name:
-        model_name = 'realesrgan-x2plus'
-        print_colored(f"  Using {model_name} for 2x scale", Colors.WARNING)
+    model = args.model.lower()
+    if model == "hat":
+        _enhance_with_hat(args, input_dir, output_dir, scale, len(frames))
+    elif model == "diffusion":
+        _enhance_with_diffusion(args, input_dir, output_dir, scale, len(frames))
+    elif model == "ensemble":
+        _enhance_with_ensemble(args, input_dir, output_dir, scale, len(frames))
+    else:
+        _enhance_with_realesrgan(args, input_dir, output_dir, scale, frames)
 
-    # Process frames with Real-ESRGAN
+
+def _enhance_with_realesrgan(args, input_dir, output_dir, scale, frames):
+    """Enhance frames using Real-ESRGAN."""
+    import cv2
+
+    try:
+        from realesrgan import RealESRGANer
+        from basicsr.archs.rrdbnet_arch import RRDBNet
+
+        model_dir = Path.home() / ".framewright" / "models"
+
+        model_name = args.model
+        if model_name in ("realesrgan-x4plus", "realesrgan"):
+            model_path = model_dir / "RealESRGAN_x4plus.pth"
+            model_arch = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
+            netscale = 4
+        elif "anime" in model_name:
+            model_path = model_dir / "realesr-animevideov3.pth"
+            model_arch = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=6, num_grow_ch=32, scale=4)
+            netscale = 4
+        else:
+            model_path = model_dir / "realesr-general-x4v3.pth"
+            model_arch = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
+            netscale = 4
+
+        if not model_path.exists():
+            for fallback in ["RealESRGAN_x4plus.pth", "realesr-general-x4v3.pth"]:
+                fb_path = model_dir / fallback
+                if fb_path.exists():
+                    model_path = fb_path
+                    print_colored(f"  Using fallback model: {fallback}", Colors.WARNING)
+                    break
+
+        if not model_path.exists():
+            print_colored(f"Error: Model not found at {model_path}", Colors.FAIL)
+            print_colored("Download models first via the dashboard or run:", Colors.WARNING)
+            print_colored("  framewright restore --input video.mp4 --output out.mp4", Colors.WARNING)
+            sys.exit(1)
+
+        print_colored(f"  Loading model: {model_path.name}", Colors.OKCYAN)
+
+        upsampler = RealESRGANer(
+            scale=netscale,
+            model_path=str(model_path),
+            model=model_arch,
+            tile=512,
+            tile_pad=10,
+            pre_pad=10,
+            half=True,
+        )
+        print_colored(f"  Model loaded on GPU, tile size 512", Colors.OKCYAN)
+
+    except ImportError as e:
+        print_colored(f"Error: Required package not installed: {e}", Colors.FAIL)
+        print_colored("Install with: pip install realesrgan basicsr", Colors.WARNING)
+        sys.exit(1)
+
     failed_frames = []
 
     with tqdm(total=len(frames), desc="Enhancing frames", ncols=100) as pbar:
         for frame in frames:
             output_frame = output_dir / frame.name
-
-            cmd = [
-                'realesrgan-ncnn-vulkan',
-                '-i', str(frame),
-                '-o', str(output_frame),
-                '-n', model_name,
-                '-s', str(scale),
-                '-f', 'png'
-            ]
-
             try:
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=300
-                )
-                if result.returncode != 0:
+                img = cv2.imread(str(frame), cv2.IMREAD_UNCHANGED)
+                if img is None:
                     failed_frames.append(frame.name)
-            except subprocess.TimeoutExpired:
+                    pbar.update(1)
+                    continue
+                output, _ = upsampler.enhance(img, outscale=scale)
+                cv2.imwrite(str(output_frame), output)
+            except Exception:
                 failed_frames.append(frame.name)
-            except FileNotFoundError:
-                print_colored("\nError: realesrgan-ncnn-vulkan not found.", Colors.FAIL)
-                print_colored("Install from: https://github.com/xinntao/Real-ESRGAN", Colors.WARNING)
-                sys.exit(1)
-
             pbar.update(1)
 
     enhanced_count = len(frames) - len(failed_frames)
     print_colored(f"\n✓ Enhanced {enhanced_count}/{len(frames)} frames to: {output_dir}", Colors.OKGREEN)
-
     if failed_frames:
         print_colored(f"  Warning: {len(failed_frames)} frames failed to enhance", Colors.WARNING)
+
+
+def _enhance_with_hat(args, input_dir, output_dir, scale, frame_count):
+    """Enhance frames using HAT (Hybrid Attention Transformer)."""
+    try:
+        from .processors.hat_upscaler import HATUpscaler, HATConfig, HATModelSize
+
+        size_map = {"small": HATModelSize.SMALL, "base": HATModelSize.BASE, "large": HATModelSize.LARGE}
+        hat_size = size_map.get(getattr(args, 'hat_size', 'large'), HATModelSize.LARGE)
+
+        config = HATConfig(scale=scale, model_size=hat_size)
+        upscaler = HATUpscaler(config)
+
+        if not upscaler.is_available():
+            print_colored("  HAT model not found, attempting download...", Colors.WARNING)
+            if not upscaler.download_model():
+                print_colored("  HAT unavailable, falling back to Real-ESRGAN", Colors.WARNING)
+                frames = sorted(input_dir.glob("*.png")) or sorted(input_dir.glob("*.jpg"))
+                _enhance_with_realesrgan(args, input_dir, output_dir, scale, frames)
+                return
+
+        print_colored(f"  Using HAT-{hat_size.value} ({frame_count} frames)", Colors.OKCYAN)
+
+        import time
+        start = time.time()
+
+        def progress_cb(pct):
+            pass  # tqdm handles display via upscale_frames internals
+
+        result = upscaler.upscale_frames(input_dir, output_dir, progress_callback=progress_cb)
+        elapsed = time.time() - start
+        fps = result.frames_processed / elapsed if elapsed > 0 else 0
+
+        print_colored(
+            f"\n✓ HAT enhanced {result.frames_processed}/{frame_count} frames "
+            f"({fps:.1f} fps, {elapsed:.0f}s)", Colors.OKGREEN
+        )
+        if result.frames_failed:
+            print_colored(f"  Warning: {result.frames_failed} frames failed", Colors.WARNING)
+
+    except ImportError as e:
+        print_colored(f"  HAT import failed ({e}), falling back to Real-ESRGAN", Colors.WARNING)
+        frames = sorted(input_dir.glob("*.png")) or sorted(input_dir.glob("*.jpg"))
+        _enhance_with_realesrgan(args, input_dir, output_dir, scale, frames)
+
+
+def _enhance_with_diffusion(args, input_dir, output_dir, scale, frame_count):
+    """Enhance frames using Diffusion SR."""
+    try:
+        from .processors.diffusion_sr import DiffusionSRProcessor, DiffusionSRConfig, DiffusionModel
+
+        model_map = {
+            "upscale_a_video": DiffusionModel.UPSCALE_A_VIDEO,
+            "stable_sr": DiffusionModel.STABLE_SR,
+            "resshift": DiffusionModel.RESSHIFT,
+        }
+        diff_model = model_map.get(
+            getattr(args, 'diffusion_model', 'upscale_a_video'),
+            DiffusionModel.UPSCALE_A_VIDEO,
+        )
+        steps = getattr(args, 'diffusion_steps', 20)
+
+        config = DiffusionSRConfig(
+            model=diff_model,
+            scale_factor=scale,
+            num_inference_steps=steps,
+        )
+        processor = DiffusionSRProcessor(config)
+
+        if not processor.is_available():
+            print_colored("  Diffusion SR unavailable, falling back to Real-ESRGAN", Colors.WARNING)
+            frames = sorted(input_dir.glob("*.png")) or sorted(input_dir.glob("*.jpg"))
+            _enhance_with_realesrgan(args, input_dir, output_dir, scale, frames)
+            return
+
+        print_colored(
+            f"  Using Diffusion SR ({diff_model.value}, {steps} steps, {frame_count} frames)",
+            Colors.OKCYAN,
+        )
+
+        import time
+        start = time.time()
+        result = processor.enhance_video(input_dir, output_dir)
+        elapsed = time.time() - start
+        fps = result.frames_processed / elapsed if elapsed > 0 else 0
+
+        print_colored(
+            f"\n✓ Diffusion SR enhanced {result.frames_processed}/{frame_count} frames "
+            f"({fps:.2f} fps, {elapsed:.0f}s)", Colors.OKGREEN
+        )
+        if result.frames_failed:
+            print_colored(f"  Warning: {result.frames_failed} frames failed", Colors.WARNING)
+
+    except ImportError as e:
+        print_colored(f"  Diffusion SR import failed ({e}), falling back to Real-ESRGAN", Colors.WARNING)
+        frames = sorted(input_dir.glob("*.png")) or sorted(input_dir.glob("*.jpg"))
+        _enhance_with_realesrgan(args, input_dir, output_dir, scale, frames)
+
+
+def _enhance_with_ensemble(args, input_dir, output_dir, scale, frame_count):
+    """Enhance frames using Ensemble SR (multiple models combined)."""
+    try:
+        from .processors.ensemble_sr import EnsembleSR, EnsembleConfig, VotingMethod
+
+        method_map = {
+            "weighted": VotingMethod.WEIGHTED,
+            "max_quality": VotingMethod.MAX_QUALITY,
+            "per_region": VotingMethod.PER_REGION,
+            "adaptive": VotingMethod.ADAPTIVE,
+            "median": VotingMethod.MEDIAN,
+        }
+        voting = method_map.get(
+            getattr(args, 'ensemble_method', 'weighted'),
+            VotingMethod.WEIGHTED,
+        )
+        model_list = getattr(args, 'ensemble_models', 'hat,realesrgan').split(',')
+
+        config = EnsembleConfig(models=model_list, voting_method=voting)
+        ensemble = EnsembleSR(config)
+
+        if not ensemble.is_available():
+            print_colored("  Ensemble SR unavailable (need >=2 models), falling back to Real-ESRGAN", Colors.WARNING)
+            frames = sorted(input_dir.glob("*.png")) or sorted(input_dir.glob("*.jpg"))
+            _enhance_with_realesrgan(args, input_dir, output_dir, scale, frames)
+            return
+
+        print_colored(
+            f"  Using Ensemble SR ({', '.join(model_list)}, method={voting.value}, {frame_count} frames)",
+            Colors.OKCYAN,
+        )
+
+        import time
+        start = time.time()
+        result = ensemble.upscale_frames(input_dir, output_dir)
+        elapsed = time.time() - start
+        fps = result.frames_processed / elapsed if elapsed > 0 else 0
+
+        print_colored(
+            f"\n✓ Ensemble SR enhanced {result.frames_processed}/{frame_count} frames "
+            f"({fps:.2f} fps, {elapsed:.0f}s)", Colors.OKGREEN
+        )
+        if result.frames_failed:
+            print_colored(f"  Warning: {result.frames_failed} frames failed", Colors.WARNING)
+
+    except ImportError as e:
+        print_colored(f"  Ensemble SR import failed ({e}), falling back to Real-ESRGAN", Colors.WARNING)
+        frames = sorted(input_dir.glob("*.png")) or sorted(input_dir.glob("*.jpg"))
+        _enhance_with_realesrgan(args, input_dir, output_dir, scale, frames)
 
 
 def reassemble_video(args):
@@ -1534,6 +1983,185 @@ def config_init(args):
         sys.exit(1)
 
 
+# =========================================================================
+# Profile Commands - User preference profiles
+# =========================================================================
+
+
+def profile_save(args):
+    """Save current settings as a named profile."""
+    from .utils.profiles import ProfileManager
+    from .config import PRESETS
+
+    manager = ProfileManager()
+
+    name = args.name
+    description = getattr(args, 'description', None) or ""
+
+    # Check if saving from a preset
+    from_preset = getattr(args, 'from_preset', None)
+
+    if from_preset:
+        # Save from a built-in preset
+        if from_preset not in PRESETS:
+            available = ', '.join(PRESETS.keys())
+            print_colored(f"Error: Unknown preset '{from_preset}'", Colors.FAIL)
+            print_colored(f"Available presets: {available}", Colors.WARNING)
+            sys.exit(1)
+
+        config_dict = PRESETS[from_preset].copy()
+        if not description:
+            description = f"Based on '{from_preset}' preset"
+
+        try:
+            profile_path = manager.save_profile_from_dict(name, config_dict, description)
+            print_colored(f"Profile saved: {profile_path}", Colors.OKGREEN)
+            print_colored(f"  Source: {from_preset} preset", Colors.OKCYAN)
+        except ValueError as e:
+            print_colored(f"Error: {e}", Colors.FAIL)
+            sys.exit(1)
+        except OSError as e:
+            print_colored(f"Error saving profile: {e}", Colors.FAIL)
+            sys.exit(1)
+    else:
+        # Save current CLI-like settings as profile
+        # Build config dict from common restoration settings
+        config_dict = {
+            "scale_factor": getattr(args, 'scale', 4),
+            "model_name": getattr(args, 'model', 'realesrgan-x4plus'),
+            "crf": getattr(args, 'quality', 18),
+            "output_format": getattr(args, 'format', 'mkv'),
+            "enable_interpolation": getattr(args, 'enable_rife', False),
+            "target_fps": getattr(args, 'target_fps', None),
+            "rife_model": getattr(args, 'rife_model', 'rife-v4.6'),
+            "enable_auto_enhance": getattr(args, 'auto_enhance', False),
+            "scratch_sensitivity": getattr(args, 'scratch_sensitivity', 0.5),
+            "grain_reduction": getattr(args, 'grain_reduction', 0.3),
+            "enable_colorization": getattr(args, 'colorize', False),
+            "colorization_model": getattr(args, 'colorize_model', 'ddcolor'),
+            "enable_watermark_removal": getattr(args, 'remove_watermark', False),
+        }
+
+        try:
+            profile_path = manager.save_profile_from_dict(name, config_dict, description)
+            print_colored(f"Profile saved: {profile_path}", Colors.OKGREEN)
+        except ValueError as e:
+            print_colored(f"Error: {e}", Colors.FAIL)
+            sys.exit(1)
+        except OSError as e:
+            print_colored(f"Error saving profile: {e}", Colors.FAIL)
+            sys.exit(1)
+
+
+def profile_load(args):
+    """Display settings from a named profile."""
+    from .utils.profiles import ProfileManager
+
+    manager = ProfileManager()
+    name = args.name
+
+    try:
+        profile_data = manager.load_profile_raw(name)
+
+        print_colored(f"\nProfile: {name}", Colors.HEADER)
+        print_colored("=" * 50, Colors.HEADER)
+
+        if profile_data.get("description"):
+            print_colored(f"\nDescription: {profile_data['description']}", Colors.OKCYAN)
+
+        if profile_data.get("created_at"):
+            print(f"Created: {profile_data['created_at']}")
+        if profile_data.get("updated_at"):
+            print(f"Updated: {profile_data['updated_at']}")
+
+        print_colored("\nSettings:", Colors.BOLD)
+        config = profile_data.get("config", {})
+        for key, value in sorted(config.items()):
+            if value is not None:
+                print(f"  {key}: {value}")
+
+        print()
+        print_colored(f"Use with: framewright restore --user-profile {name} ...", Colors.OKCYAN)
+
+    except FileNotFoundError:
+        print_colored(f"Error: Profile not found: {name}", Colors.FAIL)
+        print_colored("\nAvailable profiles:", Colors.WARNING)
+        for profile in manager.list_profiles():
+            print(f"  - {profile}")
+        sys.exit(1)
+    except ValueError as e:
+        print_colored(f"Error: Invalid profile: {e}", Colors.FAIL)
+        sys.exit(1)
+
+
+def profile_list(args):
+    """List all saved profiles."""
+    from .utils.profiles import ProfileManager
+
+    manager = ProfileManager()
+
+    profiles = manager.list_profiles_detailed()
+
+    if not profiles:
+        print_colored("\nNo profiles saved yet.", Colors.WARNING)
+        print_colored("\nCreate a profile with:", Colors.OKCYAN)
+        print("  framewright profile save <name> --from-preset quality")
+        print("  framewright profile save <name> --from-preset anime")
+        print()
+        return
+
+    print_colored("\nSaved Profiles:", Colors.HEADER)
+    print_colored("=" * 60, Colors.HEADER)
+    print()
+
+    for profile in profiles:
+        name = profile["name"]
+        desc = profile.get("description", "")
+        created = profile.get("created_at", "")
+
+        print_colored(f"  {name}", Colors.BOLD)
+        if desc:
+            print(f"    Description: {desc}")
+        if created:
+            # Format date nicely
+            try:
+                from datetime import datetime
+                dt = datetime.fromisoformat(created)
+                created_str = dt.strftime("%Y-%m-%d %H:%M")
+                print(f"    Created: {created_str}")
+            except (ValueError, TypeError):
+                print(f"    Created: {created}")
+        print()
+
+    print_colored("Use a profile with:", Colors.OKCYAN)
+    print("  framewright restore --user-profile <name> --input video.mp4 --output out.mkv")
+
+
+def profile_delete(args):
+    """Delete a saved profile."""
+    from .utils.profiles import ProfileManager
+
+    manager = ProfileManager()
+    name = args.name
+
+    if not manager.profile_exists(name):
+        print_colored(f"Error: Profile not found: {name}", Colors.FAIL)
+        sys.exit(1)
+
+    # Confirm deletion unless --yes flag is provided
+    if not getattr(args, 'yes', False):
+        response = input(f"Delete profile '{name}'? [y/N]: ").strip().lower()
+        if response != 'y':
+            print_colored("Cancelled.", Colors.WARNING)
+            return
+
+    if manager.delete_profile(name):
+        print_colored(f"Profile deleted: {name}", Colors.OKGREEN)
+    else:
+        print_colored(f"Error: Could not delete profile: {name}", Colors.FAIL)
+        sys.exit(1)
+
+
 def install_completion(args):
     """Install shell completion for the specified shell."""
     shell = args.shell
@@ -1680,6 +2308,55 @@ def _profile_completer(prefix, parsed_args, **kwargs):
                 if p.startswith(prefix)]
 
 
+class SimplifiedHelpFormatter(argparse.RawDescriptionHelpFormatter):
+    """Custom formatter that shows grouped, simplified help by default."""
+
+    def __init__(self, prog, indent_increment=2, max_help_position=30, width=None):
+        super().__init__(prog, indent_increment, max_help_position, width)
+        self._show_advanced = False
+
+    def _format_action(self, action):
+        # Skip advanced options unless explicitly requested
+        if hasattr(action, 'advanced') and action.advanced and not self._show_advanced:
+            return ''
+        return super()._format_action(action)
+
+
+def _print_simplified_restore_help():
+    """Print simplified help for the restore command."""
+    print()
+    print_colored("FrameWright - Video Restoration", Colors.HEADER)
+    print_colored("=" * 50, Colors.HEADER)
+    print()
+    print_colored("ESSENTIAL OPTIONS:", Colors.BOLD)
+    print("  --input FILE         Input video file path")
+    print("  --output FILE        Output video file path")
+    print("  --output-dir DIR     Output directory (alternative to --output)")
+    print("  --preset NAME        Use preset: fast, quality, archive, anime")
+    print("  --scale {2,4}        Upscaling factor (default: 2)")
+    print("  --dry-run            Show what would happen without processing")
+    print()
+    print_colored("COMMON OPTIONS:", Colors.BOLD)
+    print("  --auto-enhance       Enable automatic face/defect repair")
+    print("  --enable-rife        Enable frame interpolation for smoother video")
+    print("  --target-fps N       Target FPS for interpolation (e.g., 60)")
+    print("  --colorize           Colorize black & white footage")
+    print("  --quality N          Output quality CRF (lower=better, default: 18)")
+    print()
+    print_colored("EXAMPLES:", Colors.OKCYAN)
+    print("  # Quick restore with auto settings")
+    print("  framewright restore --input old_film.mp4 --output restored.mp4 --auto-enhance")
+    print()
+    print("  # High quality 4x upscale with 60fps output")
+    print("  framewright restore --input video.mp4 --output hd.mp4 --scale 4 --enable-rife --target-fps 60")
+    print()
+    print("  # Preview what will happen (dry run)")
+    print("  framewright restore --input video.mp4 --output out.mp4 --dry-run")
+    print()
+    print_colored("Show all options with: framewright restore --help --advanced", Colors.WARNING)
+    print()
+
+
 def create_parser() -> argparse.ArgumentParser:
     """Create argument parser for CLI."""
     parser = argparse.ArgumentParser(
@@ -1817,15 +2494,136 @@ Examples:
                                help='OCR engine for subtitle detection (default: auto)')
     restore_parser.add_argument('--subtitle-languages', type=str, default='en',
                                help='Comma-separated language codes for OCR (e.g., "en,zh,ja")')
+
+    # ===== Ultimate Preset Features (Advanced AI Restoration) =====
+
+    # TAP Neural Denoising
+    restore_parser.add_argument('--tap-denoise', action='store_true',
+                               help='Enable TAP neural denoising (Restormer/NAFNet - 34-38 dB PSNR)')
+    restore_parser.add_argument('--tap-model', type=str, default='restormer',
+                               choices=['restormer', 'nafnet', 'tap'],
+                               help='TAP denoising model (default: restormer)')
+    restore_parser.add_argument('--tap-strength', type=float, default=1.0,
+                               help='TAP denoising strength 0-1 (default: 1.0)')
+    restore_parser.add_argument('--tap-preserve-grain', action='store_true',
+                               help='Preserve film grain during TAP denoising')
+
+    # Diffusion Super-Resolution
+    restore_parser.add_argument('--diffusion-sr', action='store_true',
+                               help='Use diffusion-based super-resolution (highest quality, slow)')
+    restore_parser.add_argument('--diffusion-steps', type=int, default=20,
+                               help='Number of diffusion steps (default: 20, more=better quality)')
+    restore_parser.add_argument('--diffusion-guidance', type=float, default=7.5,
+                               help='Diffusion guidance scale (default: 7.5)')
+
+    # Face Enhancement Model Selection
+    restore_parser.add_argument('--face-model', type=str, default='gfpgan',
+                               choices=['gfpgan', 'codeformer', 'aesrgan'],
+                               help='Face enhancement model (default: gfpgan, aesrgan=attention-enhanced)')
+    restore_parser.add_argument('--aesrgan-strength', type=float, default=0.8,
+                               help='AESRGAN face enhancement strength 0-1 (default: 0.8)')
+
+    # QP-Aware Codec Artifact Removal
+    restore_parser.add_argument('--qp-artifact-removal', action='store_true',
+                               help='Enable QP-aware codec artifact removal (for compressed sources)')
+    restore_parser.add_argument('--qp-strength', type=float, default=1.0,
+                               help='Artifact removal strength multiplier (default: 1.0)')
+    restore_parser.add_argument('--qp-manual', type=int, default=None,
+                               help='Manual QP value override (auto-detected if not set)')
+
+    # Exemplar-Based Colorization (SwinTExCo)
+    restore_parser.add_argument('--colorize-reference', type=str, nargs='+', default=None,
+                               help='Reference color images for exemplar-based colorization')
+    restore_parser.add_argument('--colorize-temporal-fusion', action='store_true', default=True,
+                               help='Enable temporal fusion for colorization consistency')
+
+    # Reference-Guided Enhancement (IP-Adapter + ControlNet)
+    restore_parser.add_argument('--reference-enhance', action='store_true',
+                               help='Enable reference-guided enhancement (IP-Adapter + ControlNet)')
+    restore_parser.add_argument('--reference-dir', type=str, default=None,
+                               help='Directory with reference photos (3-10 high-quality images of same locations/subjects)')
+    restore_parser.add_argument('--reference-strength', type=float, default=0.35,
+                               help='Reference enhancement strength (0.0-1.0, default: 0.35)')
+    restore_parser.add_argument('--reference-guidance', type=float, default=7.5,
+                               help='Reference guidance scale (default: 7.5)')
+    restore_parser.add_argument('--reference-ip-scale', type=float, default=0.6,
+                               help='IP-Adapter influence scale (0.0-1.0, default: 0.6)')
+
+    # Missing Frame Generation
+    restore_parser.add_argument('--generate-frames', action='store_true',
+                               help='Generate missing frames (for damaged film with gaps)')
+    restore_parser.add_argument('--frame-gen-model', type=str, default='interpolate_blend',
+                               choices=['svd', 'optical_flow_warp', 'interpolate_blend'],
+                               help='Frame generation model (default: interpolate_blend)')
+    restore_parser.add_argument('--max-gap-frames', type=int, default=10,
+                               help='Maximum frames to generate in a gap (default: 10)')
+
+    # Enhanced Temporal Consistency
+    restore_parser.add_argument('--temporal-method', type=str, default='optical_flow',
+                               choices=['optical_flow', 'cross_attention', 'hybrid'],
+                               help='Temporal consistency method (default: optical_flow, hybrid=best)')
+    restore_parser.add_argument('--cross-attention-window', type=int, default=7,
+                               help='Cross-attention window size (default: 7)')
+    restore_parser.add_argument('--temporal-blend-strength', type=float, default=0.8,
+                               help='Temporal blending strength 0-1 (default: 0.8)')
+
     # Profile support from config file
     profile_arg = restore_parser.add_argument('--profile', type=str, default=None,
-                               help='Use a named profile from config file (e.g., anime, film_restoration, fast)')
+                               help='Use a named profile from config file (e.g., anime, film_restoration, ultimate)')
     # Add profile completer if argcomplete is available
     if ARGCOMPLETE_AVAILABLE:
         profile_arg.completer = _profile_completer  # type: ignore
+
+    # User-saved profile support (from ~/.framewright/profiles/)
+    restore_parser.add_argument('--user-profile', type=str, default=None, metavar='NAME',
+                               help='Use a saved user profile (from framewright profile save)')
+
     # Dry-run mode
     restore_parser.add_argument('--dry-run', action='store_true',
                                help='Analyze video and show processing plan without executing')
+
+    # ===== v2.1 Modular Features =====
+
+    # JSON sidecar metadata export
+    restore_parser.add_argument('--sidecar', action='store_true',
+                               help='Export JSON sidecar metadata alongside output video')
+
+    # Scene-aware processing
+    restore_parser.add_argument('--scene-aware', action='store_true',
+                               help='Enable per-scene intensity adjustment based on scene detection')
+
+    # Motion-adaptive denoising
+    restore_parser.add_argument('--motion-adaptive', action='store_true',
+                               help='Enable motion-aware denoising (stronger on static, lighter on motion)')
+
+    # Audio-video sync repair
+    restore_parser.add_argument('--fix-sync', action='store_true',
+                               help='Repair audio-video drift (analyze and correct A/V synchronization)')
+
+    # HDR expansion
+    restore_parser.add_argument('--expand-hdr', type=str, default=None,
+                               choices=['hdr10', 'dolby-vision'],
+                               help='Convert SDR to HDR (hdr10 or dolby-vision)')
+
+    # Aspect ratio correction
+    restore_parser.add_argument('--fix-aspect', type=str, default=None,
+                               choices=['auto', '4:3', '16:9'],
+                               help='Correct aspect ratio (auto-detect or specify 4:3/16:9)')
+
+    # Inverse telecine
+    restore_parser.add_argument('--ivtc', type=str, default=None,
+                               choices=['auto', '3:2', '2:3'],
+                               help='Inverse telecine to recover original film frames (auto, 3:2, or 2:3 pulldown)')
+
+    # Perceptual balance
+    restore_parser.add_argument('--perceptual', type=str, default=None,
+                               metavar='MODE',
+                               help='Perceptual balance mode: faithful, balanced, enhanced, or 0.0-1.0 value')
+
+    # Advanced help flag - show all options when combined with --help
+    restore_parser.add_argument('--advanced', action='store_true',
+                               help='Show all advanced options (use with --help)')
+
     restore_parser.set_defaults(func=restore_video)
 
     # Extract frames command
@@ -1839,7 +2637,21 @@ Examples:
     enhance_parser.add_argument('--input', type=str, required=True, help='Input frames directory')
     enhance_parser.add_argument('--output', type=str, required=True, help='Output directory for enhanced frames')
     enhance_parser.add_argument('--scale', type=int, default=2, choices=[2, 4], help='Upscaling factor (default: 2)')
-    enhance_parser.add_argument('--model', type=str, default='realesrgan-x4plus', help='AI model to use')
+    enhance_parser.add_argument('--model', type=str, default='realesrgan-x4plus',
+                               help='AI model to use (realesrgan-x4plus, hat, diffusion, ensemble)')
+    enhance_parser.add_argument('--hat-size', type=str, default='large',
+                               choices=['small', 'base', 'large'],
+                               help='HAT model size (default: large)')
+    enhance_parser.add_argument('--diffusion-steps', type=int, default=20,
+                               help='Number of diffusion inference steps (default: 20)')
+    enhance_parser.add_argument('--diffusion-model', type=str, default='upscale_a_video',
+                               choices=['upscale_a_video', 'stable_sr', 'resshift'],
+                               help='Diffusion SR model (default: upscale_a_video)')
+    enhance_parser.add_argument('--ensemble-models', type=str, default='hat,realesrgan',
+                               help='Comma-separated models for ensemble (default: hat,realesrgan)')
+    enhance_parser.add_argument('--ensemble-method', type=str, default='weighted',
+                               choices=['weighted', 'max_quality', 'per_region', 'adaptive', 'median'],
+                               help='Ensemble combination method (default: weighted)')
     enhance_parser.set_defaults(func=enhance_frames)
 
     # Reassemble command
@@ -2087,11 +2899,313 @@ Examples:
                                     help='Create project-local config (.framewright.yaml) instead of user config')
     config_init_parser.set_defaults(func=config_init)
 
+    # =========================================================================
+    # Profile Commands - Save and load user preferences
+    # =========================================================================
+    profile_parser = subparsers.add_parser('profile', help='Manage saved user profiles')
+    profile_subparsers = profile_parser.add_subparsers(dest='profile_action', help='Profile actions')
+
+    # profile save
+    profile_save_parser = profile_subparsers.add_parser('save', help='Save settings as a named profile')
+    profile_save_parser.add_argument('name', type=str, help='Profile name (alphanumeric, hyphens, underscores)')
+    profile_save_parser.add_argument('--from-preset', type=str, default=None, metavar='PRESET',
+                                     help='Save a built-in preset as profile (fast, quality, archive, anime, etc.)')
+    profile_save_parser.add_argument('--description', type=str, default=None,
+                                     help='Description of this profile')
+    # Optional settings to include in the profile
+    profile_save_parser.add_argument('--scale', type=int, default=4, choices=[2, 4],
+                                     help='Upscaling factor (default: 4)')
+    profile_save_parser.add_argument('--model', type=str, default='realesrgan-x4plus',
+                                     help='AI model to use')
+    profile_save_parser.add_argument('--quality', type=int, default=18,
+                                     help='CRF quality (default: 18)')
+    profile_save_parser.add_argument('--format', type=str, default='mkv',
+                                     choices=['mkv', 'mp4', 'webm', 'avi', 'mov'],
+                                     help='Output format (default: mkv)')
+    profile_save_parser.add_argument('--enable-rife', action='store_true',
+                                     help='Enable RIFE interpolation')
+    profile_save_parser.add_argument('--target-fps', type=float, default=None,
+                                     help='Target frame rate for RIFE')
+    profile_save_parser.add_argument('--rife-model', type=str, default='rife-v4.6',
+                                     help='RIFE model version')
+    profile_save_parser.add_argument('--auto-enhance', action='store_true',
+                                     help='Enable auto-enhancement')
+    profile_save_parser.add_argument('--scratch-sensitivity', type=float, default=0.5,
+                                     help='Scratch detection sensitivity')
+    profile_save_parser.add_argument('--grain-reduction', type=float, default=0.3,
+                                     help='Film grain reduction')
+    profile_save_parser.add_argument('--colorize', action='store_true',
+                                     help='Enable colorization')
+    profile_save_parser.add_argument('--colorize-model', type=str, default='ddcolor',
+                                     help='Colorization model')
+    profile_save_parser.add_argument('--remove-watermark', action='store_true',
+                                     help='Enable watermark removal')
+    profile_save_parser.set_defaults(func=profile_save)
+
+    # profile load (show)
+    profile_load_parser = profile_subparsers.add_parser('load', help='Display settings from a saved profile')
+    profile_load_parser.add_argument('name', type=str, help='Profile name to load')
+    profile_load_parser.set_defaults(func=profile_load)
+
+    # profile list
+    profile_list_parser = profile_subparsers.add_parser('list', help='List all saved profiles')
+    profile_list_parser.set_defaults(func=profile_list)
+
+    # profile delete
+    profile_delete_parser = profile_subparsers.add_parser('delete', help='Delete a saved profile')
+    profile_delete_parser.add_argument('name', type=str, help='Profile name to delete')
+    profile_delete_parser.add_argument('--yes', '-y', action='store_true',
+                                       help='Skip confirmation prompt')
+    profile_delete_parser.set_defaults(func=profile_delete)
+
     # Shell completion installer
     completion_parser = subparsers.add_parser('completion', help='Install shell completion')
     completion_parser.add_argument('shell', type=str, choices=['bash', 'zsh', 'fish'],
                                    help='Shell to install completion for')
     completion_parser.set_defaults(func=install_completion)
+
+    # =========================================================================
+    # v2.1 Modular Feature Commands
+    # =========================================================================
+
+    # --- Notify Commands ---
+    notify_parser = subparsers.add_parser('notify', help='Notification setup and management')
+    notify_subparsers = notify_parser.add_subparsers(dest='notify_action', help='Notify actions')
+
+    # notify setup
+    notify_setup_parser = notify_subparsers.add_parser('setup', help='Configure notification channels')
+    notify_setup_subparsers = notify_setup_parser.add_subparsers(dest='notify_setup_type', help='Setup type')
+
+    # notify setup email
+    notify_email_parser = notify_setup_subparsers.add_parser('email', help='Interactive SMTP email setup')
+    notify_email_parser.set_defaults(func=notify_setup_email_command)
+
+    # notify setup sms
+    notify_sms_parser = notify_setup_subparsers.add_parser('sms', help='Interactive Twilio SMS setup')
+    notify_sms_parser.set_defaults(func=notify_setup_sms_command)
+
+    # --- Daemon Commands ---
+    daemon_parser = subparsers.add_parser('daemon', help='Background daemon management')
+    daemon_subparsers = daemon_parser.add_subparsers(dest='daemon_action', help='Daemon actions')
+
+    # daemon start
+    daemon_start_parser = daemon_subparsers.add_parser('start', help='Start background daemon')
+    daemon_start_parser.add_argument('--port', type=int, default=8765,
+                                     help='Port for daemon communication (default: 8765)')
+    daemon_start_parser.set_defaults(func=daemon_start_command)
+
+    # daemon stop
+    daemon_stop_parser = daemon_subparsers.add_parser('stop', help='Stop background daemon')
+    daemon_stop_parser.set_defaults(func=daemon_stop_command)
+
+    # daemon status
+    daemon_status_parser = daemon_subparsers.add_parser('status', help='Check daemon status')
+    daemon_status_parser.set_defaults(func=daemon_status_command)
+
+    # --- Schedule Commands ---
+    schedule_parser = subparsers.add_parser('schedule', help='Job scheduling management')
+    schedule_subparsers = schedule_parser.add_subparsers(dest='schedule_action', help='Schedule actions')
+
+    # schedule add
+    schedule_add_parser = schedule_subparsers.add_parser('add', help='Add a scheduled job')
+    schedule_add_parser.add_argument('--input', type=str, required=True, help='Input video file or directory')
+    schedule_add_parser.add_argument('--output', type=str, required=True, help='Output path')
+    schedule_add_parser.add_argument('--cron', type=str, default=None,
+                                     help='Cron expression for scheduling (e.g., "0 2 * * *" for 2 AM daily)')
+    schedule_add_parser.add_argument('--at', type=str, default=None,
+                                     help='Run at specific time (e.g., "2024-01-15 14:30" or "14:30")')
+    schedule_add_parser.add_argument('--preset', type=str, default='quality',
+                                     help='Processing preset (default: quality)')
+    schedule_add_parser.set_defaults(func=schedule_add_command)
+
+    # schedule list
+    schedule_list_parser = schedule_subparsers.add_parser('list', help='List scheduled jobs')
+    schedule_list_parser.add_argument('--all', action='store_true', help='Show completed jobs too')
+    schedule_list_parser.set_defaults(func=schedule_list_command)
+
+    # schedule remove
+    schedule_remove_parser = schedule_subparsers.add_parser('remove', help='Remove a scheduled job')
+    schedule_remove_parser.add_argument('job_id', type=str, help='Job ID to remove')
+    schedule_remove_parser.set_defaults(func=schedule_remove_command)
+
+    # --- Integrate Commands ---
+    integrate_parser = subparsers.add_parser('integrate', help='Media server integration')
+    integrate_subparsers = integrate_parser.add_subparsers(dest='integrate_action', help='Integration actions')
+
+    # integrate plex
+    integrate_plex_parser = integrate_subparsers.add_parser('plex', help='Setup Plex Media Server integration')
+    integrate_plex_parser.add_argument('--url', type=str, help='Plex server URL')
+    integrate_plex_parser.add_argument('--token', type=str, help='Plex auth token')
+    integrate_plex_parser.set_defaults(func=integrate_plex_command)
+
+    # integrate jellyfin
+    integrate_jellyfin_parser = integrate_subparsers.add_parser('jellyfin', help='Setup Jellyfin integration')
+    integrate_jellyfin_parser.add_argument('--url', type=str, help='Jellyfin server URL')
+    integrate_jellyfin_parser.add_argument('--api-key', type=str, help='Jellyfin API key')
+    integrate_jellyfin_parser.set_defaults(func=integrate_jellyfin_command)
+
+    # --- Upload Commands ---
+    upload_parser = subparsers.add_parser('upload', help='Upload restored videos to platforms')
+    upload_subparsers = upload_parser.add_subparsers(dest='upload_action', help='Upload actions')
+
+    # upload youtube
+    upload_youtube_parser = upload_subparsers.add_parser('youtube', help='Upload to YouTube')
+    upload_youtube_parser.add_argument('input', type=str, help='Video file to upload')
+    upload_youtube_parser.add_argument('--title', type=str, required=True, help='Video title')
+    upload_youtube_parser.add_argument('--description', type=str, default='', help='Video description')
+    upload_youtube_parser.add_argument('--privacy', type=str, default='private',
+                                       choices=['public', 'unlisted', 'private'],
+                                       help='Privacy setting (default: private)')
+    upload_youtube_parser.add_argument('--tags', type=str, nargs='+', help='Video tags')
+    upload_youtube_parser.set_defaults(func=upload_youtube_command)
+
+    # upload archive
+    upload_archive_parser = upload_subparsers.add_parser('archive', help='Upload to Archive.org')
+    upload_archive_parser.add_argument('input', type=str, help='Video file to upload')
+    upload_archive_parser.add_argument('--identifier', type=str, required=True,
+                                       help='Archive.org item identifier')
+    upload_archive_parser.add_argument('--title', type=str, required=True, help='Item title')
+    upload_archive_parser.add_argument('--description', type=str, default='', help='Item description')
+    upload_archive_parser.add_argument('--collection', type=str, default='opensource_movies',
+                                       help='Archive.org collection (default: opensource_movies)')
+    upload_archive_parser.set_defaults(func=upload_archive_command)
+
+    # --- Report Command ---
+    report_parser = subparsers.add_parser('report', help='Generate reports')
+    report_subparsers = report_parser.add_subparsers(dest='report_action', help='Report actions')
+
+    # report trends
+    report_trends_parser = report_subparsers.add_parser('trends', help='Generate quality trend report')
+    report_trends_parser.add_argument('--input-dir', type=str, required=True,
+                                      help='Directory containing processed videos')
+    report_trends_parser.add_argument('--output', type=str, default=None,
+                                      help='Output report file (HTML or JSON)')
+    report_trends_parser.add_argument('--format', type=str, choices=['html', 'json', 'text'], default='text',
+                                      help='Report format (default: text)')
+    report_trends_parser.set_defaults(func=report_trends_command)
+
+    # --- Estimate Command ---
+    estimate_parser = subparsers.add_parser('estimate', help='Estimate processing cost and time')
+    estimate_parser.add_argument('input', type=str, help='Input video file')
+    estimate_parser.add_argument('--scale', type=int, default=2, choices=[2, 4],
+                                 help='Upscaling factor (default: 2)')
+    estimate_parser.add_argument('--preset', type=str, default='quality',
+                                 help='Processing preset')
+    estimate_parser.add_argument('--cloud', action='store_true',
+                                 help='Include cloud GPU cost estimate')
+    estimate_parser.set_defaults(func=estimate_command)
+
+    # --- Proxy Commands ---
+    proxy_parser = subparsers.add_parser('proxy', help='Proxy workflow management')
+    proxy_subparsers = proxy_parser.add_subparsers(dest='proxy_action', help='Proxy actions')
+
+    # proxy create
+    proxy_create_parser = proxy_subparsers.add_parser('create', help='Create low-resolution proxy')
+    proxy_create_parser.add_argument('input', type=str, help='Input video file')
+    proxy_create_parser.add_argument('--output', type=str, default=None, help='Output proxy file')
+    proxy_create_parser.add_argument('--scale', type=float, default=0.25,
+                                     help='Scale factor for proxy (default: 0.25)')
+    proxy_create_parser.add_argument('--quality', type=int, default=28,
+                                     help='CRF quality for proxy (default: 28)')
+    proxy_create_parser.set_defaults(func=proxy_create_command)
+
+    # proxy apply
+    proxy_apply_parser = proxy_subparsers.add_parser('apply', help='Apply proxy edits to original')
+    proxy_apply_parser.add_argument('proxy', type=str, help='Edited proxy file')
+    proxy_apply_parser.add_argument('original', type=str, help='Original high-res file')
+    proxy_apply_parser.add_argument('--output', type=str, required=True, help='Output file')
+    proxy_apply_parser.set_defaults(func=proxy_apply_command)
+
+    # --- Project Command ---
+    project_parser = subparsers.add_parser('project', help='Project management')
+    project_subparsers = project_parser.add_subparsers(dest='project_action', help='Project actions')
+
+    # project changelog
+    project_changelog_parser = project_subparsers.add_parser('changelog', help='Show project history')
+    project_changelog_parser.add_argument('--project-dir', type=str, default='.',
+                                          help='Project directory (default: current)')
+    project_changelog_parser.add_argument('--limit', type=int, default=20,
+                                          help='Number of entries to show (default: 20)')
+    project_changelog_parser.set_defaults(func=project_changelog_command)
+
+    # --- Analyze Subcommands (extend existing analyze) ---
+    # Note: The main analyze command exists, we add subparsers for scenes and sync
+
+    # analyze scenes
+    analyze_scenes_parser = subparsers.add_parser('analyze-scenes', help='Preview scene breakdown')
+    analyze_scenes_parser.add_argument('input', type=str, help='Input video file')
+    analyze_scenes_parser.add_argument('--threshold', type=float, default=0.3,
+                                       help='Scene detection threshold (default: 0.3)')
+    analyze_scenes_parser.add_argument('--output', type=str, default=None,
+                                       help='Save scene list to JSON file')
+    analyze_scenes_parser.set_defaults(func=analyze_scenes_command)
+
+    # analyze sync
+    analyze_sync_parser = subparsers.add_parser('analyze-sync', help='Show A/V drift report')
+    analyze_sync_parser.add_argument('input', type=str, help='Input video file')
+    analyze_sync_parser.add_argument('--detailed', action='store_true',
+                                     help='Show detailed drift measurements')
+    analyze_sync_parser.set_defaults(func=analyze_sync_command)
+
+    # =========================================================================
+    # Simplified Commands (Apple-like UX)
+    # =========================================================================
+
+    # Wizard - Interactive guided setup
+    wizard_parser = subparsers.add_parser(
+        'wizard',
+        help='Interactive guided restoration setup',
+        description='Launch the interactive wizard for guided video restoration setup.'
+    )
+    wizard_parser.add_argument('input', nargs='?', type=str, help='Optional input video file')
+    wizard_parser.set_defaults(func=run_wizard_command)
+
+    # Quick - Fast restoration
+    quick_parser = subparsers.add_parser(
+        'quick',
+        help='Fast restoration with good quality',
+        description='Quick restoration using optimized settings for speed.'
+    )
+    quick_parser.add_argument('input', type=str, help='Input video file')
+    quick_parser.add_argument('-o', '--output', type=str, help='Output file path')
+    quick_parser.set_defaults(func=run_quick_command)
+
+    # Best - Maximum quality
+    best_parser = subparsers.add_parser(
+        'best',
+        help='Maximum quality restoration (slower)',
+        description='Maximum quality restoration using all available techniques.'
+    )
+    best_parser.add_argument('input', type=str, help='Input video file')
+    best_parser.add_argument('-o', '--output', type=str, help='Output file path')
+    best_parser.set_defaults(func=run_best_command)
+
+    # Archive - Optimized for archive footage
+    archive_parser = subparsers.add_parser(
+        'archive',
+        help='Optimized for archive/historical footage',
+        description='Restoration optimized for archive footage with missing frame generation.'
+    )
+    archive_parser.add_argument('input', type=str, help='Input video file')
+    archive_parser.add_argument('-o', '--output', type=str, help='Output file path')
+    archive_parser.add_argument(
+        '--colorize',
+        nargs='*',
+        type=str,
+        metavar='REF',
+        help='Reference images for colorization'
+    )
+    archive_parser.set_defaults(func=run_archive_command)
+
+    # Auto - Smart auto-detection and restoration
+    auto_parser = subparsers.add_parser(
+        'auto',
+        help='Smart auto-restore (analyzes and picks optimal settings)',
+        description='Automatically analyze video and apply optimal restoration settings.'
+    )
+    auto_parser.add_argument('input', type=str, help='Input video file')
+    auto_parser.add_argument('-o', '--output', type=str, help='Output file path')
+    auto_parser.set_defaults(func=run_auto_command)
 
     # Cloud processing commands (Vast.ai + Google Drive)
     try:
@@ -2099,6 +3213,46 @@ Examples:
         setup_cloud_parser(subparsers)
     except ImportError:
         pass  # Cloud module not available
+
+    # =========================================================================
+    # Model Management Commands
+    # =========================================================================
+    models_parser = subparsers.add_parser('models', help='Manage AI models (download, verify, list)')
+    models_subparsers = models_parser.add_subparsers(dest='models_action', help='Model management actions')
+
+    # models list
+    models_list_parser = models_subparsers.add_parser('list', help='List available models with download status')
+    models_list_parser.add_argument('--type', type=str, default=None,
+                                    choices=['realesrgan', 'rife', 'deoldify', 'ddcolor', 'lama',
+                                             'gfpgan', 'codeformer', 'tap_denoise', 'aesrgan',
+                                             'diffusion_sr', 'qp_artifact', 'swintexco',
+                                             'frame_generation', 'temporal_attention'],
+                                    help='Filter models by type')
+    models_list_parser.add_argument('--model-dir', type=str, default=None,
+                                    help='Custom model directory (default: ~/.framewright/models)')
+    models_list_parser.set_defaults(func=models_list_command)
+
+    # models download
+    models_download_parser = models_subparsers.add_parser('download', help='Download AI models')
+    models_download_parser.add_argument('model_name', type=str, nargs='?', default=None,
+                                        help='Name of the model to download')
+    models_download_parser.add_argument('--all', action='store_true',
+                                        help='Download all available models')
+    models_download_parser.add_argument('--model-dir', type=str, default=None,
+                                        help='Custom model directory (default: ~/.framewright/models)')
+    models_download_parser.set_defaults(func=models_download_command)
+
+    # models verify
+    models_verify_parser = models_subparsers.add_parser('verify', help='Verify model integrity (checksum validation)')
+    models_verify_parser.add_argument('--model-dir', type=str, default=None,
+                                      help='Custom model directory (default: ~/.framewright/models)')
+    models_verify_parser.set_defaults(func=models_verify_command)
+
+    # models path
+    models_path_parser = models_subparsers.add_parser('path', help='Show models directory path')
+    models_path_parser.add_argument('--model-dir', type=str, default=None,
+                                    help='Custom model directory (default: ~/.framewright/models)')
+    models_path_parser.set_defaults(func=models_path_command)
 
     # Legacy --install-completion flag (for compatibility)
     parser.add_argument('--install-completion', type=str, choices=['bash', 'zsh', 'fish'],
@@ -2245,8 +3399,1099 @@ def run_benchmark(args):
         sys.exit(1)
 
 
+# =============================================================================
+# Simplified Command Handlers (Apple-like UX)
+# =============================================================================
+
+def run_wizard_command(args):
+    """Run the interactive wizard."""
+    from ._ui_pkg.wizard import InteractiveWizard
+    from ._ui_pkg.terminal import Console
+
+    console = Console()
+    wizard = InteractiveWizard(console)
+
+    input_path = Path(args.input) if args.input else None
+    result = wizard.run(input_path)
+
+    if result.completed:
+        # Run restoration with wizard settings
+        config_dict = result.to_config_dict()
+        config_dict["project_dir"] = result.input_path.parent / ".framewright_temp"
+
+        from .config import Config
+        from .restorer import VideoRestorer
+
+        config = Config(**config_dict)
+        restorer = VideoRestorer(config)
+
+        try:
+            output = restorer.restore_video(
+                source=str(result.input_path),
+                output_path=result.output_path,
+            )
+            console.success(f"Restoration complete: {output}")
+        except Exception as e:
+            console.error(f"Restoration failed: {e}")
+            sys.exit(1)
+    elif result.cancelled:
+        print_colored("Wizard cancelled", Colors.WARNING)
+        sys.exit(0)
+
+
+def run_quick_command(args):
+    """Run quick restoration."""
+    from ._ui_pkg.terminal import Console
+    from .config import Config
+    from .restorer import VideoRestorer
+
+    console = Console()
+    console.print_compact_banner()
+
+    input_path = Path(args.input)
+    output_path = Path(args.output) if args.output else input_path.parent / f"{input_path.stem}_quick.mp4"
+
+    console.info("Quick restoration mode - optimized for speed")
+
+    config = Config(
+        preset="fast",
+        scale_factor=2,
+        project_dir=input_path.parent / ".framewright_temp",
+    )
+
+    restorer = VideoRestorer(config)
+    try:
+        result = restorer.restore_video(
+            source=str(input_path),
+            output_path=output_path,
+        )
+        console.success(f"Quick restoration complete: {result}")
+    except Exception as e:
+        console.error(f"Restoration failed: {e}")
+        sys.exit(1)
+
+
+def run_best_command(args):
+    """Run maximum quality restoration."""
+    from ._ui_pkg.terminal import Console
+    from ._ui_pkg.auto_detect import analyze_video_smart
+    from ._ui_pkg.recommendations import get_recommendations
+    from .config import Config
+    from .restorer import VideoRestorer
+
+    console = Console()
+    console.print_compact_banner()
+
+    input_path = Path(args.input)
+    output_path = Path(args.output) if args.output else input_path.parent / f"{input_path.stem}_best.mp4"
+
+    console.info("Maximum quality mode - this will take longer")
+
+    # Analyze video
+    console.info("Analyzing video...")
+    analysis = analyze_video_smart(input_path)
+
+    # Get ultimate recommendations
+    recommendations = get_recommendations(
+        analysis=analysis,
+        user_priority="maximum",
+    )
+
+    console.restoration_plan(
+        preset="Ultimate",
+        stages=recommendations.processing_stages,
+        estimated_time="Significantly longer",
+        quality_target="Maximum",
+    )
+
+    config_dict = recommendations.to_config_dict()
+    config_dict["project_dir"] = input_path.parent / ".framewright_temp"
+    config_dict["preset"] = "ultimate"
+
+    config = Config(**config_dict)
+    restorer = VideoRestorer(config)
+
+    try:
+        result = restorer.restore_video(
+            source=str(input_path),
+            output_path=output_path,
+        )
+        console.success(f"Maximum quality restoration complete: {result}")
+    except Exception as e:
+        console.error(f"Restoration failed: {e}")
+        sys.exit(1)
+
+
+def run_archive_command(args):
+    """Run archive-optimized restoration."""
+    from ._ui_pkg.terminal import Console
+    from ._ui_pkg.auto_detect import analyze_video_smart
+    from .config import Config
+    from .restorer import VideoRestorer
+
+    console = Console()
+    console.print_compact_banner()
+
+    input_path = Path(args.input)
+    output_path = Path(args.output) if args.output else input_path.parent / f"{input_path.stem}_archive.mp4"
+
+    console.info("Archive footage restoration mode")
+
+    # Analyze
+    console.info("Analyzing archive footage...")
+    analysis = analyze_video_smart(input_path)
+
+    console.video_summary(
+        path=input_path,
+        resolution=analysis.resolution,
+        fps=analysis.fps,
+        duration=analysis.duration_formatted,
+        codec=analysis.codec,
+        size_mb=analysis.bitrate_kbps * analysis.duration_seconds / 8000,
+    )
+
+    # Build archive-optimized config
+    config_dict = {
+        "preset": "ultimate",
+        "project_dir": input_path.parent / ".framewright_temp",
+        "scale_factor": 4 if analysis.width < 720 else 2,
+        "enable_tap_denoise": True,
+        "enable_qp_artifact_removal": True,
+        "enable_frame_generation": True,
+        "enable_deduplication": True,
+        "temporal_method": "hybrid",
+        "enable_interpolation": analysis.fps < 24,
+        "target_fps": 24 if analysis.fps < 20 else analysis.fps,
+    }
+
+    # Face enhancement if faces detected
+    if analysis.content.has_faces:
+        config_dict["auto_face_restore"] = True
+        config_dict["face_model"] = "aesrgan"
+
+    # Colorization with references
+    if args.colorize:
+        config_dict["colorization_reference_images"] = args.colorize
+        console.info(f"Colorization enabled with {len(args.colorize)} reference images")
+    elif analysis.content.is_black_and_white:
+        console.warning("B&W footage detected. For colorization, use --colorize with reference images")
+
+    config = Config(**config_dict)
+    restorer = VideoRestorer(config)
+
+    try:
+        result = restorer.restore_video(
+            source=str(input_path),
+            output_path=output_path,
+        )
+        console.success(f"Archive restoration complete: {result}")
+    except Exception as e:
+        console.error(f"Restoration failed: {e}")
+        sys.exit(1)
+
+
+def run_auto_command(args):
+    """Run smart auto-restoration."""
+    from ._ui_pkg.terminal import Console
+    from ._ui_pkg.auto_detect import analyze_video_smart
+    from ._ui_pkg.recommendations import get_recommendations
+    from .config import Config
+    from .restorer import VideoRestorer
+
+    console = Console()
+    console.print_compact_banner()
+
+    input_path = Path(args.input)
+    output_path = Path(args.output) if args.output else input_path.parent / f"{input_path.stem}_restored.mp4"
+
+    console.info("Smart auto-restore mode")
+
+    # Analyze video
+    console.info("Analyzing video...")
+    analysis = analyze_video_smart(input_path)
+
+    # Show analysis
+    console.video_summary(
+        path=input_path,
+        resolution=analysis.resolution,
+        fps=analysis.fps,
+        duration=analysis.duration_formatted,
+        codec=analysis.codec,
+        size_mb=analysis.bitrate_kbps * analysis.duration_seconds / 8000,
+    )
+
+    # Get recommendations
+    recommendations = get_recommendations(
+        analysis=analysis,
+        user_priority="balanced",
+    )
+
+    # Show plan
+    console.restoration_plan(
+        preset=recommendations.preset.title(),
+        stages=recommendations.processing_stages,
+        estimated_time="Depends on video length",
+        quality_target=f"{recommendations.estimated_quality_score*100:.0f}%",
+    )
+
+    # Show warnings
+    for warning in recommendations.warnings:
+        console.warning(warning)
+
+    console.info("Starting restoration...")
+
+    # Create config from recommendations
+    config_dict = recommendations.to_config_dict()
+    config_dict["project_dir"] = input_path.parent / ".framewright_temp"
+
+    config = Config(**config_dict)
+    restorer = VideoRestorer(config)
+
+    try:
+        result = restorer.restore_video(
+            source=str(input_path),
+            output_path=output_path,
+        )
+        console.success(f"Smart restoration complete: {result}")
+    except Exception as e:
+        console.error(f"Restoration failed: {e}")
+        sys.exit(1)
+
+
+# =============================================================================
+# v2.1 Modular Feature Command Handlers
+# =============================================================================
+
+def notify_setup_email_command(args):
+    """Interactive SMTP email setup."""
+    print_colored("\nEmail Notification Setup", Colors.HEADER)
+    print_colored("=" * 40, Colors.HEADER)
+
+    try:
+        smtp_server = input("SMTP Server (e.g., smtp.gmail.com): ").strip()
+        smtp_port = input("SMTP Port (default: 587): ").strip() or "587"
+        email_address = input("Email Address: ").strip()
+        password = input("Password/App Password: ").strip()
+        recipient = input("Notification Recipient Email: ").strip()
+
+        # Save to config
+        from .utils.config_file import ConfigFileManager
+        manager = ConfigFileManager()
+        if manager.config_exists():
+            manager.load()
+
+        manager.set("notifications.email.enabled", True)
+        manager.set("notifications.email.smtp_server", smtp_server)
+        manager.set("notifications.email.smtp_port", int(smtp_port))
+        manager.set("notifications.email.sender", email_address)
+        manager.set("notifications.email.recipient", recipient)
+        # Note: Password should be stored securely, not in plain config
+        print_colored("\nEmail configuration saved.", Colors.OKGREEN)
+        print_colored("Note: Store password in FRAMEWRIGHT_SMTP_PASSWORD environment variable.", Colors.WARNING)
+
+    except KeyboardInterrupt:
+        print_colored("\nSetup cancelled.", Colors.WARNING)
+    except Exception as e:
+        print_colored(f"Error: {e}", Colors.FAIL)
+        sys.exit(1)
+
+
+def notify_setup_sms_command(args):
+    """Interactive Twilio SMS setup."""
+    print_colored("\nSMS Notification Setup (Twilio)", Colors.HEADER)
+    print_colored("=" * 40, Colors.HEADER)
+
+    try:
+        account_sid = input("Twilio Account SID: ").strip()
+        phone_from = input("Twilio Phone Number (e.g., +1234567890): ").strip()
+        phone_to = input("Your Phone Number (e.g., +1234567890): ").strip()
+
+        # Save to config
+        from .utils.config_file import ConfigFileManager
+        manager = ConfigFileManager()
+        if manager.config_exists():
+            manager.load()
+
+        manager.set("notifications.sms.enabled", True)
+        manager.set("notifications.sms.twilio_sid", account_sid)
+        manager.set("notifications.sms.phone_from", phone_from)
+        manager.set("notifications.sms.phone_to", phone_to)
+
+        print_colored("\nSMS configuration saved.", Colors.OKGREEN)
+        print_colored("Note: Store Twilio Auth Token in TWILIO_AUTH_TOKEN environment variable.", Colors.WARNING)
+
+    except KeyboardInterrupt:
+        print_colored("\nSetup cancelled.", Colors.WARNING)
+    except Exception as e:
+        print_colored(f"Error: {e}", Colors.FAIL)
+        sys.exit(1)
+
+
+def daemon_start_command(args):
+    """Start background daemon."""
+    print_colored(f"\nStarting FrameWright daemon on port {args.port}...", Colors.OKBLUE)
+
+    try:
+        from .daemon import FrameWrightDaemon
+        daemon = FrameWrightDaemon(port=args.port)
+        daemon.start()
+        print_colored(f"Daemon started (PID: {daemon.pid})", Colors.OKGREEN)
+        print_colored(f"Listening on port {args.port}", Colors.OKCYAN)
+    except ImportError:
+        print_colored("Daemon module not available. Install with: pip install framewright[daemon]", Colors.FAIL)
+        sys.exit(1)
+    except Exception as e:
+        print_colored(f"Failed to start daemon: {e}", Colors.FAIL)
+        sys.exit(1)
+
+
+def daemon_stop_command(args):
+    """Stop background daemon."""
+    print_colored("\nStopping FrameWright daemon...", Colors.OKBLUE)
+
+    try:
+        from .daemon import FrameWrightDaemon
+        daemon = FrameWrightDaemon()
+        daemon.stop()
+        print_colored("Daemon stopped.", Colors.OKGREEN)
+    except ImportError:
+        print_colored("Daemon module not available.", Colors.FAIL)
+        sys.exit(1)
+    except Exception as e:
+        print_colored(f"Failed to stop daemon: {e}", Colors.FAIL)
+        sys.exit(1)
+
+
+def daemon_status_command(args):
+    """Check daemon status."""
+    try:
+        from .daemon import FrameWrightDaemon
+        daemon = FrameWrightDaemon()
+        status = daemon.get_status()
+
+        print_colored("\nFrameWright Daemon Status", Colors.HEADER)
+        print_colored("=" * 40, Colors.HEADER)
+        print(f"  Running:     {'Yes' if status.get('running') else 'No'}")
+        if status.get('running'):
+            print(f"  PID:         {status.get('pid')}")
+            print(f"  Port:        {status.get('port')}")
+            print(f"  Uptime:      {status.get('uptime', 'N/A')}")
+            print(f"  Jobs Active: {status.get('active_jobs', 0)}")
+            print(f"  Jobs Queue:  {status.get('queued_jobs', 0)}")
+    except ImportError:
+        print_colored("Daemon not running (module not available).", Colors.WARNING)
+    except Exception as e:
+        print_colored(f"Error checking status: {e}", Colors.FAIL)
+        sys.exit(1)
+
+
+def schedule_add_command(args):
+    """Add a scheduled job."""
+    print_colored("\nAdding scheduled job...", Colors.OKBLUE)
+
+    if not args.cron and not args.at:
+        print_colored("Error: Either --cron or --at must be specified.", Colors.FAIL)
+        sys.exit(1)
+
+    try:
+        from .queue import JobScheduler
+        scheduler = JobScheduler()
+
+        job_id = scheduler.add_job(
+            input_path=args.input,
+            output_path=args.output,
+            cron_expr=args.cron,
+            run_at=args.at,
+            preset=args.preset,
+        )
+
+        print_colored(f"Job scheduled successfully!", Colors.OKGREEN)
+        print(f"  Job ID:   {job_id}")
+        print(f"  Input:    {args.input}")
+        print(f"  Output:   {args.output}")
+        if args.cron:
+            print(f"  Schedule: {args.cron} (cron)")
+        else:
+            print(f"  Run at:   {args.at}")
+
+    except ImportError:
+        print_colored("Scheduler module not available. Install with: pip install framewright[scheduler]", Colors.FAIL)
+        sys.exit(1)
+    except Exception as e:
+        print_colored(f"Failed to schedule job: {e}", Colors.FAIL)
+        sys.exit(1)
+
+
+def schedule_list_command(args):
+    """List scheduled jobs."""
+    try:
+        from .queue import JobScheduler
+        scheduler = JobScheduler()
+        jobs = scheduler.list_jobs(include_completed=args.all)
+
+        print_colored("\nScheduled Jobs", Colors.HEADER)
+        print_colored("=" * 60, Colors.HEADER)
+
+        if not jobs:
+            print_colored("No scheduled jobs found.", Colors.OKCYAN)
+            return
+
+        for job in jobs:
+            status_color = Colors.OKGREEN if job['status'] == 'completed' else Colors.OKCYAN
+            print_colored(f"\n  [{job['id']}]", Colors.BOLD)
+            print(f"    Input:    {job['input']}")
+            print(f"    Output:   {job['output']}")
+            print(f"    Schedule: {job.get('cron') or job.get('run_at')}")
+            print(f"    Status:   {status_color}{job['status']}{Colors.ENDC}")
+
+    except ImportError:
+        print_colored("Scheduler module not available.", Colors.WARNING)
+    except Exception as e:
+        print_colored(f"Error listing jobs: {e}", Colors.FAIL)
+        sys.exit(1)
+
+
+def schedule_remove_command(args):
+    """Remove a scheduled job."""
+    try:
+        from .queue import JobScheduler
+        scheduler = JobScheduler()
+        scheduler.remove_job(args.job_id)
+        print_colored(f"Job {args.job_id} removed.", Colors.OKGREEN)
+    except ImportError:
+        print_colored("Scheduler module not available.", Colors.WARNING)
+        sys.exit(1)
+    except Exception as e:
+        print_colored(f"Failed to remove job: {e}", Colors.FAIL)
+        sys.exit(1)
+
+
+def integrate_plex_command(args):
+    """Setup Plex integration."""
+    print_colored("\nPlex Media Server Integration", Colors.HEADER)
+    print_colored("=" * 40, Colors.HEADER)
+
+    try:
+        url = args.url or input("Plex Server URL (e.g., http://192.168.1.100:32400): ").strip()
+        token = args.token or input("Plex Auth Token: ").strip()
+
+        from .integration.plex import PlexIntegration
+        plex = PlexIntegration(url=url, token=token)
+
+        # Test connection
+        if plex.test_connection():
+            print_colored("Connection successful!", Colors.OKGREEN)
+
+            # Save config
+            from .utils.config_file import ConfigFileManager
+            manager = ConfigFileManager()
+            if manager.config_exists():
+                manager.load()
+            manager.set("integrations.plex.url", url)
+            manager.set("integrations.plex.enabled", True)
+            print_colored("Plex integration saved.", Colors.OKGREEN)
+            print_colored("Note: Store token in PLEX_TOKEN environment variable.", Colors.WARNING)
+        else:
+            print_colored("Connection failed. Please check URL and token.", Colors.FAIL)
+
+    except ImportError:
+        print_colored("Plex integration not available. Install with: pip install framewright[plex]", Colors.FAIL)
+        sys.exit(1)
+    except Exception as e:
+        print_colored(f"Error: {e}", Colors.FAIL)
+        sys.exit(1)
+
+
+def integrate_jellyfin_command(args):
+    """Setup Jellyfin integration."""
+    print_colored("\nJellyfin Integration", Colors.HEADER)
+    print_colored("=" * 40, Colors.HEADER)
+
+    try:
+        url = args.url or input("Jellyfin Server URL (e.g., http://192.168.1.100:8096): ").strip()
+        api_key = args.api_key or input("Jellyfin API Key: ").strip()
+
+        from .integration.jellyfin import JellyfinIntegration
+        jellyfin = JellyfinIntegration(url=url, api_key=api_key)
+
+        # Test connection
+        if jellyfin.test_connection():
+            print_colored("Connection successful!", Colors.OKGREEN)
+
+            # Save config
+            from .utils.config_file import ConfigFileManager
+            manager = ConfigFileManager()
+            if manager.config_exists():
+                manager.load()
+            manager.set("integrations.jellyfin.url", url)
+            manager.set("integrations.jellyfin.enabled", True)
+            print_colored("Jellyfin integration saved.", Colors.OKGREEN)
+            print_colored("Note: Store API key in JELLYFIN_API_KEY environment variable.", Colors.WARNING)
+        else:
+            print_colored("Connection failed. Please check URL and API key.", Colors.FAIL)
+
+    except ImportError:
+        print_colored("Jellyfin integration not available. Install with: pip install framewright[jellyfin]", Colors.FAIL)
+        sys.exit(1)
+    except Exception as e:
+        print_colored(f"Error: {e}", Colors.FAIL)
+        sys.exit(1)
+
+
+def upload_youtube_command(args):
+    """Upload video to YouTube."""
+    print_colored(f"\nUploading to YouTube: {args.input}", Colors.OKBLUE)
+
+    input_path = Path(args.input)
+    if not input_path.exists():
+        print_colored(f"Error: File not found: {input_path}", Colors.FAIL)
+        sys.exit(1)
+
+    try:
+        from .export.youtube import YouTubeUploader
+        uploader = YouTubeUploader()
+
+        result = uploader.upload(
+            video_path=input_path,
+            title=args.title,
+            description=args.description,
+            privacy=args.privacy,
+            tags=args.tags or [],
+        )
+
+        print_colored("Upload successful!", Colors.OKGREEN)
+        print(f"  Video ID:  {result['video_id']}")
+        print(f"  URL:       https://youtube.com/watch?v={result['video_id']}")
+
+    except ImportError:
+        print_colored("YouTube upload not available. Install with: pip install framewright[youtube]", Colors.FAIL)
+        sys.exit(1)
+    except Exception as e:
+        print_colored(f"Upload failed: {e}", Colors.FAIL)
+        sys.exit(1)
+
+
+def upload_archive_command(args):
+    """Upload video to Archive.org."""
+    print_colored(f"\nUploading to Archive.org: {args.input}", Colors.OKBLUE)
+
+    input_path = Path(args.input)
+    if not input_path.exists():
+        print_colored(f"Error: File not found: {input_path}", Colors.FAIL)
+        sys.exit(1)
+
+    try:
+        from .export.archive_org import ArchiveOrgUploader
+        uploader = ArchiveOrgUploader()
+
+        result = uploader.upload(
+            file_path=input_path,
+            identifier=args.identifier,
+            title=args.title,
+            description=args.description,
+            collection=args.collection,
+        )
+
+        print_colored("Upload successful!", Colors.OKGREEN)
+        print(f"  Item URL: https://archive.org/details/{args.identifier}")
+
+    except ImportError:
+        print_colored("Archive.org upload not available. Install with: pip install framewright[archive]", Colors.FAIL)
+        sys.exit(1)
+    except Exception as e:
+        print_colored(f"Upload failed: {e}", Colors.FAIL)
+        sys.exit(1)
+
+
+def report_trends_command(args):
+    """Generate quality trend report."""
+    print_colored(f"\nGenerating quality trend report for: {args.input_dir}", Colors.OKBLUE)
+
+    input_dir = Path(args.input_dir)
+    if not input_dir.exists():
+        print_colored(f"Error: Directory not found: {input_dir}", Colors.FAIL)
+        sys.exit(1)
+
+    try:
+        from .reports.trends import TrendAnalyzer
+        analyzer = TrendAnalyzer()
+
+        report = analyzer.analyze_directory(input_dir)
+
+        if args.format == 'json':
+            import json
+            output = json.dumps(report.to_dict(), indent=2)
+        elif args.format == 'html':
+            output = report.to_html()
+        else:
+            output = report.to_text()
+
+        if args.output:
+            Path(args.output).write_text(output)
+            print_colored(f"Report saved to: {args.output}", Colors.OKGREEN)
+        else:
+            print(output)
+
+    except ImportError:
+        print_colored("Trend analysis not available.", Colors.WARNING)
+        sys.exit(1)
+    except Exception as e:
+        print_colored(f"Error generating report: {e}", Colors.FAIL)
+        sys.exit(1)
+
+
+def estimate_command(args):
+    """Estimate processing cost and time."""
+    print_colored(f"\nEstimating processing for: {args.input}", Colors.OKBLUE)
+
+    input_path = Path(args.input)
+    if not input_path.exists():
+        print_colored(f"Error: File not found: {input_path}", Colors.FAIL)
+        sys.exit(1)
+
+    try:
+        from .utils.ffmpeg import probe_video
+
+        metadata = probe_video(input_path)
+        duration = metadata.get('duration', 0)
+        resolution = (metadata.get('width', 0), metadata.get('height', 0))
+        frame_count = int(duration * metadata.get('framerate', 24))
+
+        # Estimation factors (rough estimates)
+        output_pixels = resolution[0] * args.scale * resolution[1] * args.scale
+        complexity_factor = 1.0 if args.preset == 'fast' else (1.5 if args.preset == 'quality' else 2.5)
+
+        # Time estimate (very rough: ~0.5s per frame for quality preset at 1080p output)
+        base_time_per_frame = 0.1 if args.preset == 'fast' else (0.5 if args.preset == 'quality' else 2.0)
+        scale_factor = output_pixels / (1920 * 1080)
+        estimated_seconds = frame_count * base_time_per_frame * scale_factor
+
+        print_colored("\nProcessing Estimate", Colors.HEADER)
+        print_colored("=" * 40, Colors.HEADER)
+        print(f"  Input Resolution:  {resolution[0]}x{resolution[1]}")
+        print(f"  Output Resolution: {resolution[0] * args.scale}x{resolution[1] * args.scale}")
+        print(f"  Duration:          {duration:.1f} seconds")
+        print(f"  Frame Count:       {frame_count}")
+        print(f"  Preset:            {args.preset}")
+
+        print_colored("\nTime Estimate (local GPU):", Colors.OKCYAN)
+        hours = int(estimated_seconds // 3600)
+        minutes = int((estimated_seconds % 3600) // 60)
+        print(f"  Estimated Time:    {hours}h {minutes}m")
+
+        if args.cloud:
+            # Cloud cost estimate
+            gpu_price_per_hour = 0.50  # Rough Vast.ai estimate
+            cloud_speedup = 2.0  # Cloud GPU typically faster
+            cloud_hours = estimated_seconds / 3600 / cloud_speedup
+            cloud_cost = cloud_hours * gpu_price_per_hour
+
+            print_colored("\nCloud GPU Estimate (Vast.ai):", Colors.OKCYAN)
+            print(f"  Estimated Time:    {int(cloud_hours * 60)}m")
+            print(f"  Estimated Cost:    ${cloud_cost:.2f}")
+
+    except Exception as e:
+        print_colored(f"Error estimating: {e}", Colors.FAIL)
+        sys.exit(1)
+
+
+def proxy_create_command(args):
+    """Create low-resolution proxy."""
+    print_colored(f"\nCreating proxy for: {args.input}", Colors.OKBLUE)
+
+    input_path = Path(args.input)
+    if not input_path.exists():
+        print_colored(f"Error: File not found: {input_path}", Colors.FAIL)
+        sys.exit(1)
+
+    output_path = Path(args.output) if args.output else input_path.parent / f"{input_path.stem}_proxy.mp4"
+
+    try:
+        import subprocess
+        from .utils.ffmpeg import probe_video
+
+        metadata = probe_video(input_path)
+        new_width = int(metadata.get('width', 1920) * args.scale)
+        new_height = int(metadata.get('height', 1080) * args.scale)
+
+        # Ensure even dimensions
+        new_width = new_width if new_width % 2 == 0 else new_width + 1
+        new_height = new_height if new_height % 2 == 0 else new_height + 1
+
+        cmd = [
+            'ffmpeg', '-y',
+            '-i', str(input_path),
+            '-vf', f'scale={new_width}:{new_height}',
+            '-c:v', 'libx264',
+            '-crf', str(args.quality),
+            '-preset', 'fast',
+            '-c:a', 'aac',
+            '-b:a', '128k',
+            str(output_path)
+        ]
+
+        subprocess.run(cmd, check=True, capture_output=True)
+
+        print_colored(f"Proxy created: {output_path}", Colors.OKGREEN)
+        print(f"  Resolution: {new_width}x{new_height}")
+        print(f"  Scale:      {args.scale * 100:.0f}% of original")
+
+    except Exception as e:
+        print_colored(f"Failed to create proxy: {e}", Colors.FAIL)
+        sys.exit(1)
+
+
+def proxy_apply_command(args):
+    """Apply proxy edits to original."""
+    print_colored(f"\nApplying proxy edits to original...", Colors.OKBLUE)
+
+    proxy_path = Path(args.proxy)
+    original_path = Path(args.original)
+    output_path = Path(args.output)
+
+    if not proxy_path.exists():
+        print_colored(f"Error: Proxy file not found: {proxy_path}", Colors.FAIL)
+        sys.exit(1)
+
+    if not original_path.exists():
+        print_colored(f"Error: Original file not found: {original_path}", Colors.FAIL)
+        sys.exit(1)
+
+    try:
+        from .proxy import ProxyWorkflow
+        workflow = ProxyWorkflow()
+
+        result = workflow.apply_edits(
+            proxy_path=proxy_path,
+            original_path=original_path,
+            output_path=output_path,
+        )
+
+        print_colored(f"Edits applied: {output_path}", Colors.OKGREEN)
+
+    except ImportError:
+        print_colored("Proxy workflow not available.", Colors.WARNING)
+        sys.exit(1)
+    except Exception as e:
+        print_colored(f"Failed to apply proxy edits: {e}", Colors.FAIL)
+        sys.exit(1)
+
+
+def project_changelog_command(args):
+    """Show project history."""
+    print_colored("\nProject Changelog", Colors.HEADER)
+    print_colored("=" * 40, Colors.HEADER)
+
+    project_dir = Path(args.project_dir)
+    log_file = project_dir / ".framewright" / "changelog.json"
+
+    if not log_file.exists():
+        print_colored("No project history found.", Colors.WARNING)
+        return
+
+    try:
+        import json
+        with open(log_file) as f:
+            changelog = json.load(f)
+
+        entries = changelog.get('entries', [])[-args.limit:]
+
+        for entry in reversed(entries):
+            timestamp = entry.get('timestamp', 'Unknown')
+            action = entry.get('action', 'Unknown')
+            details = entry.get('details', '')
+
+            print_colored(f"\n  [{timestamp}]", Colors.OKCYAN)
+            print(f"    Action:  {action}")
+            if details:
+                print(f"    Details: {details}")
+
+    except Exception as e:
+        print_colored(f"Error reading changelog: {e}", Colors.FAIL)
+        sys.exit(1)
+
+
+def analyze_scenes_command(args):
+    """Analyze and preview scene breakdown."""
+    print_colored(f"\nAnalyzing scenes in: {args.input}", Colors.OKBLUE)
+
+    input_path = Path(args.input)
+    if not input_path.exists():
+        print_colored(f"Error: File not found: {input_path}", Colors.FAIL)
+        sys.exit(1)
+
+    try:
+        from .diagnostics.scene_detection import SceneDetector
+
+        detector = SceneDetector(threshold=args.threshold)
+        scenes = detector.detect_scenes(input_path)
+
+        print_colored("\nScene Breakdown", Colors.HEADER)
+        print_colored("=" * 50, Colors.HEADER)
+        print(f"  Total Scenes: {len(scenes)}")
+        print()
+
+        for i, scene in enumerate(scenes, 1):
+            start = scene.get('start_time', 0)
+            end = scene.get('end_time', 0)
+            duration = end - start
+            print(f"  Scene {i:3d}: {start:7.2f}s - {end:7.2f}s  (duration: {duration:.2f}s)")
+
+        if args.output:
+            import json
+            with open(args.output, 'w') as f:
+                json.dump({'scenes': scenes}, f, indent=2)
+            print_colored(f"\nScene list saved to: {args.output}", Colors.OKGREEN)
+
+    except ImportError:
+        print_colored("Scene detection not available. Install with: pip install framewright[scenes]", Colors.WARNING)
+        sys.exit(1)
+    except Exception as e:
+        print_colored(f"Error analyzing scenes: {e}", Colors.FAIL)
+        sys.exit(1)
+
+
+def analyze_sync_command(args):
+    """Analyze audio-video synchronization."""
+    print_colored(f"\nAnalyzing A/V sync: {args.input}", Colors.OKBLUE)
+
+    input_path = Path(args.input)
+    if not input_path.exists():
+        print_colored(f"Error: File not found: {input_path}", Colors.FAIL)
+        sys.exit(1)
+
+    try:
+        from .diagnostics.av_sync import AVSyncAnalyzer
+
+        analyzer = AVSyncAnalyzer()
+        report = analyzer.analyze(input_path)
+
+        print_colored("\nA/V Sync Analysis", Colors.HEADER)
+        print_colored("=" * 40, Colors.HEADER)
+        print(f"  Average Drift:  {report.get('avg_drift_ms', 0):.1f} ms")
+        print(f"  Max Drift:      {report.get('max_drift_ms', 0):.1f} ms")
+        print(f"  Drift Direction: {'Audio ahead' if report.get('avg_drift_ms', 0) > 0 else 'Video ahead'}")
+
+        sync_status = "Good" if abs(report.get('avg_drift_ms', 0)) < 50 else "Needs correction"
+        status_color = Colors.OKGREEN if sync_status == "Good" else Colors.WARNING
+        print(f"  Sync Status:    {status_color}{sync_status}{Colors.ENDC}")
+
+        if args.detailed and 'measurements' in report:
+            print_colored("\nDetailed Measurements:", Colors.OKCYAN)
+            for m in report['measurements'][:10]:
+                print(f"    {m['timestamp']:.2f}s: {m['drift_ms']:.1f}ms")
+
+        if sync_status != "Good":
+            print_colored("\nTo fix sync issues, use: framewright restore --fix-sync", Colors.OKCYAN)
+
+    except ImportError:
+        print_colored("A/V sync analysis not available.", Colors.WARNING)
+        sys.exit(1)
+    except Exception as e:
+        print_colored(f"Error analyzing sync: {e}", Colors.FAIL)
+        sys.exit(1)
+
+
+# =============================================================================
+# Model Management Commands
+# =============================================================================
+
+def models_list_command(args):
+    """List available models with download status."""
+    from .utils.model_manager import ModelManager, MODEL_REGISTRY, ModelType
+
+    model_dir = Path(args.model_dir) if hasattr(args, 'model_dir') and args.model_dir else None
+    manager = ModelManager(model_dir=model_dir)
+
+    print_colored("\nAvailable Models", Colors.HEADER)
+    print_colored("=" * 80, Colors.HEADER)
+
+    # Group models by type
+    models_by_type: Dict[str, List[str]] = {}
+    for model_name, model_info in MODEL_REGISTRY.items():
+        type_name = model_info.model_type.value if model_info.model_type else "other"
+        if type_name not in models_by_type:
+            models_by_type[type_name] = []
+        models_by_type[type_name].append(model_name)
+
+    # Filter by type if specified
+    filter_type = getattr(args, 'type', None)
+
+    for type_name in sorted(models_by_type.keys()):
+        if filter_type and filter_type != type_name:
+            continue
+
+        print_colored(f"\n[{type_name.upper()}]", Colors.BOLD)
+
+        for model_name in sorted(models_by_type[type_name]):
+            model_info = MODEL_REGISTRY[model_name]
+            is_downloaded = manager.is_model_available(model_name)
+
+            # Status indicator
+            status = f"{Colors.OKGREEN}[downloaded]{Colors.ENDC}" if is_downloaded else f"{Colors.WARNING}[not downloaded]{Colors.ENDC}"
+
+            # Size formatting
+            size_str = f"{model_info.size_mb:.1f} MB" if model_info.size_mb < 1000 else f"{model_info.size_mb / 1000:.1f} GB"
+
+            print(f"  {model_name:<30} {size_str:>10}  {status}")
+            if model_info.description:
+                print(f"      {Colors.OKCYAN}{model_info.description}{Colors.ENDC}")
+
+    # Summary
+    downloaded = manager.list_downloaded_models()
+    total = len(MODEL_REGISTRY)
+    storage = manager.get_storage_usage()
+
+    print_colored(f"\nSummary: {len(downloaded)}/{total} models downloaded", Colors.OKBLUE)
+    print_colored(f"Storage used: {storage['total_size_mb']:.1f} MB", Colors.OKBLUE)
+    print_colored(f"Model directory: {manager.model_dir}", Colors.OKCYAN)
+
+
+def models_download_command(args):
+    """Download models."""
+    from .utils.model_manager import ModelManager, MODEL_REGISTRY, DownloadError
+
+    model_dir = Path(args.model_dir) if hasattr(args, 'model_dir') and args.model_dir else None
+    manager = ModelManager(model_dir=model_dir)
+
+    if args.all:
+        # Download all models
+        models_to_download = list(MODEL_REGISTRY.keys())
+        print_colored(f"\nDownloading all {len(models_to_download)} models...", Colors.HEADER)
+    elif args.model_name:
+        models_to_download = [args.model_name]
+    else:
+        print_colored("Error: Specify a model name or use --all to download all models", Colors.FAIL)
+        sys.exit(1)
+
+    success_count = 0
+    fail_count = 0
+
+    for model_name in models_to_download:
+        if model_name not in MODEL_REGISTRY:
+            print_colored(f"Error: Unknown model '{model_name}'", Colors.FAIL)
+            print_colored("Use 'framewright models list' to see available models", Colors.OKCYAN)
+            fail_count += 1
+            continue
+
+        model_info = MODEL_REGISTRY[model_name]
+
+        # Check if already downloaded
+        if manager.is_model_available(model_name):
+            print_colored(f"Model '{model_name}' is already downloaded and verified", Colors.OKGREEN)
+            success_count += 1
+            continue
+
+        print_colored(f"\nDownloading {model_name} ({model_info.size_mb:.1f} MB)...", Colors.OKBLUE)
+
+        try:
+            path = manager.download_model(model_name)
+            print_colored(f"Successfully downloaded to: {path}", Colors.OKGREEN)
+            success_count += 1
+        except DownloadError as e:
+            print_colored(f"Failed to download {model_name}: {e}", Colors.FAIL)
+            fail_count += 1
+        except Exception as e:
+            print_colored(f"Error downloading {model_name}: {e}", Colors.FAIL)
+            fail_count += 1
+
+    # Summary
+    if len(models_to_download) > 1:
+        print_colored(f"\nDownload complete: {success_count} succeeded, {fail_count} failed", Colors.HEADER)
+
+
+def models_verify_command(args):
+    """Verify model integrity."""
+    from .utils.model_manager import ModelManager, MODEL_REGISTRY, ModelVerificationError
+
+    model_dir = Path(args.model_dir) if hasattr(args, 'model_dir') and args.model_dir else None
+    manager = ModelManager(model_dir=model_dir)
+
+    print_colored("\nVerifying Downloaded Models", Colors.HEADER)
+    print_colored("=" * 60, Colors.HEADER)
+
+    downloaded_models = manager.list_downloaded_models()
+
+    if not downloaded_models:
+        print_colored("No models downloaded yet.", Colors.WARNING)
+        print_colored("Use 'framewright models download <model_name>' to download models", Colors.OKCYAN)
+        return
+
+    verified_count = 0
+    corrupted_count = 0
+    no_checksum_count = 0
+
+    for model_name in downloaded_models:
+        model_info = MODEL_REGISTRY[model_name]
+        model_path = manager.get_model_path(model_name)
+
+        if not model_info.checksum:
+            print(f"  {model_name}: {Colors.WARNING}[no checksum available]{Colors.ENDC}")
+            no_checksum_count += 1
+            continue
+
+        try:
+            manager.verify_model(model_name)
+            print(f"  {model_name}: {Colors.OKGREEN}[verified]{Colors.ENDC}")
+            verified_count += 1
+        except ModelVerificationError as e:
+            print(f"  {model_name}: {Colors.FAIL}[CORRUPTED]{Colors.ENDC}")
+            print(f"      {Colors.FAIL}{e}{Colors.ENDC}")
+            corrupted_count += 1
+        except FileNotFoundError:
+            print(f"  {model_name}: {Colors.FAIL}[MISSING]{Colors.ENDC}")
+            corrupted_count += 1
+
+    # Summary
+    print_colored(f"\nVerification Summary:", Colors.BOLD)
+    print(f"  Verified:    {Colors.OKGREEN}{verified_count}{Colors.ENDC}")
+    print(f"  No checksum: {Colors.WARNING}{no_checksum_count}{Colors.ENDC}")
+    print(f"  Corrupted:   {Colors.FAIL}{corrupted_count}{Colors.ENDC}")
+
+    if corrupted_count > 0:
+        print_colored("\nRe-download corrupted models with: framewright models download <model_name>", Colors.OKCYAN)
+        sys.exit(1)
+
+
+def models_path_command(args):
+    """Show models directory path."""
+    from .utils.model_manager import ModelManager
+
+    model_dir = Path(args.model_dir) if hasattr(args, 'model_dir') and args.model_dir else None
+    manager = ModelManager(model_dir=model_dir)
+
+    print_colored("\nModel Storage Location", Colors.HEADER)
+    print_colored("=" * 60, Colors.HEADER)
+    print(f"  Path: {manager.model_dir}")
+
+    # Check if directory exists
+    if manager.model_dir.exists():
+        print(f"  Status: {Colors.OKGREEN}Directory exists{Colors.ENDC}")
+
+        # Get storage stats
+        storage = manager.get_storage_usage()
+        print(f"  Models downloaded: {storage['model_count']}")
+        print(f"  Total size: {storage['total_size_mb']:.1f} MB")
+    else:
+        print(f"  Status: {Colors.WARNING}Directory does not exist (will be created on first download){Colors.ENDC}")
+
+    # Show how to customize
+    print_colored("\nTo use a custom model directory:", Colors.OKCYAN)
+    print("  framewright models list --model-dir /path/to/models")
+    print("  framewright restore --model-dir /path/to/models ...")
+
+
 def main():
     """Main CLI entry point."""
+    # Check for simplified help on restore command (without --advanced)
+    if len(sys.argv) >= 2 and sys.argv[1] == 'restore':
+        if '--help' in sys.argv or '-h' in sys.argv:
+            if '--advanced' not in sys.argv:
+                # Show simplified help
+                print_header()
+                _print_simplified_restore_help()
+                sys.exit(0)
+
     parser = create_parser()
 
     # Enable argcomplete if available
@@ -2309,6 +4554,25 @@ def main():
         print("  framewright cloud status fw_abc123")
         print("  framewright cloud gpus")
         print("  framewright cloud balance")
+        sys.exit(0)
+
+    # Handle models command without action
+    if args.command == 'models' and (not hasattr(args, 'models_action') or args.models_action is None):
+        print_header()
+        print_colored("Usage: framewright models <action>", Colors.OKBLUE)
+        print_colored("\nManage AI models for video restoration", Colors.OKCYAN)
+        print_colored("\nAvailable actions:", Colors.BOLD)
+        print("  list      List available models with download status")
+        print("  download  Download AI models (by name or --all)")
+        print("  verify    Verify model integrity (checksum validation)")
+        print("  path      Show models directory path")
+        print_colored("\nExamples:", Colors.OKCYAN)
+        print("  framewright models list")
+        print("  framewright models list --type realesrgan")
+        print("  framewright models download realesrgan-x4plus")
+        print("  framewright models download --all")
+        print("  framewright models verify")
+        print("  framewright models path")
         sys.exit(0)
 
     print_header()

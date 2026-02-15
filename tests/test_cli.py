@@ -11,6 +11,10 @@ from framewright.cli import (
     restore_video,
     extract_frames,
     enhance_frames,
+    _enhance_with_realesrgan,
+    _enhance_with_hat,
+    _enhance_with_diffusion,
+    _enhance_with_ensemble,
     reassemble_video,
     enhance_audio,
     main,
@@ -219,15 +223,25 @@ class TestScaleValidation:
 class TestCommandDispatch:
     """Test command dispatch functions."""
 
-    def test_restore_video_command(self):
+    def test_restore_video_command(self, temp_dir):
         """Test restore_video command function."""
         mock_args = Mock()
-        mock_args.input = 'video.mp4'
-        mock_args.output = 'output.mp4'
+        mock_args.input = None
+        mock_args.url = 'https://example.com/video.mp4'
+        mock_args.output = str(temp_dir / 'output.mp4')
+        mock_args.output_dir = str(temp_dir)
         mock_args.scale = 2
+        mock_args.model = 'realesrgan-x2plus'
         mock_args.audio_enhance = False
+        mock_args.dry_run = True
+        mock_args.format = None
+        mock_args.user_profile = None
+        mock_args.quality = 18
+        mock_args.enable_rife = False
+        mock_args.target_fps = None
+        mock_args.auto_enhance = False
 
-        # restore_video is a placeholder, just verify it doesn't crash
+        # dry_run mode with URL avoids actual processing
         restore_video(mock_args)
 
     def test_extract_frames_command_valid_input(self, video_file, temp_dir):
@@ -236,7 +250,11 @@ class TestCommandDispatch:
         mock_args.input = str(video_file)
         mock_args.output = str(temp_dir / "frames")
 
-        extract_frames(mock_args)
+        with patch('framewright.utils.ffmpeg.extract_frames_to_dir', return_value=10):
+            with patch('framewright.utils.ffmpeg.probe_video', return_value={
+                'width': 480, 'height': 360, 'framerate': 24.0, 'duration': 5.0
+            }):
+                extract_frames(mock_args)
 
         # Verify output directory was created
         assert Path(mock_args.output).exists()
@@ -252,13 +270,29 @@ class TestCommandDispatch:
 
     def test_enhance_frames_command_valid_dir(self, frames_dir, temp_dir):
         """Test enhance_frames command with valid directory."""
+        import numpy as np
         mock_args = Mock()
         mock_args.input = str(frames_dir)
         mock_args.output = str(temp_dir / "enhanced")
         mock_args.scale = 2
         mock_args.model = 'realesrgan-x2plus'
 
-        enhance_frames(mock_args)
+        # Mock Real-ESRGAN model loading and cv2 operations
+        mock_output = np.zeros((480, 640, 3), dtype=np.uint8)
+        mock_upsampler = Mock()
+        mock_upsampler.enhance.return_value = (mock_output, None)
+        mock_realesrgan_cls = Mock(return_value=mock_upsampler)
+        mock_rrdbnet = Mock()
+
+        with patch.dict('sys.modules', {
+            'realesrgan': type('mod', (), {'RealESRGANer': mock_realesrgan_cls})(),
+            'basicsr': Mock(),
+            'basicsr.archs': Mock(),
+            'basicsr.archs.rrdbnet_arch': type('mod', (), {'RRDBNet': mock_rrdbnet})(),
+        }):
+            with patch('cv2.imread', return_value=np.zeros((240, 320, 3), dtype=np.uint8)):
+                with patch('cv2.imwrite', return_value=True):
+                    enhance_frames(mock_args)
 
         # Verify output directory was created
         assert Path(mock_args.output).exists()
@@ -291,8 +325,11 @@ class TestCommandDispatch:
         mock_args.frames_dir = str(frames_dir)
         mock_args.audio = None
         mock_args.output = str(temp_dir / "output.mp4")
+        mock_args.quality = 23
+        mock_args.fps = None
 
-        reassemble_video(mock_args)
+        with patch('framewright.utils.ffmpeg.reassemble_from_frames'):
+            reassemble_video(mock_args)
 
     def test_reassemble_video_command_invalid_frames_dir(self, temp_dir):
         """Test reassemble_video command with invalid frames directory."""
@@ -310,7 +347,11 @@ class TestCommandDispatch:
         mock_args.input = str(video_file)
         mock_args.output = str(temp_dir / "audio.wav")
 
-        enhance_audio(mock_args)
+        # Mock audio processor to avoid import and processing issues
+        mock_processor = Mock()
+        mock_audio_mod = type("mod", (), {"AudioProcessor": Mock(return_value=mock_processor)})()
+        with patch.dict("sys.modules", {"framewright.processors.audio": mock_audio_mod}):
+            enhance_audio(mock_args)
 
     def test_enhance_audio_command_invalid(self):
         """Test enhance_audio command with invalid input."""
@@ -341,7 +382,11 @@ class TestMainFunction:
             '--input', str(video_file),
             '--output', str(temp_dir / "frames"),
         ]):
-            main()
+            with patch('framewright.utils.ffmpeg.probe_video', return_value={
+                'width': 480, 'height': 360, 'framerate': 24.0, 'duration': 5.0
+            }):
+                with patch('framewright.utils.ffmpeg.extract_frames_to_dir', return_value=10):
+                    main()
 
     def test_main_keyboard_interrupt(self):
         """Test main handles keyboard interrupt."""
@@ -427,3 +472,135 @@ class TestColoredOutput:
 
         assert "FrameWright" in captured.out
         assert "v1.0.0" in captured.out
+
+
+class TestEnhanceFramesDispatch:
+    """Test enhance_frames backend dispatch and new CLI arguments."""
+
+    # -- Argument parsing --
+
+    def test_parse_hat_args(self):
+        """Test parser accepts HAT-specific arguments."""
+        parser = create_parser()
+        args = parser.parse_args([
+            'enhance-frames', '--input', 'f/', '--output', 'o/',
+            '--model', 'hat', '--hat-size', 'large',
+        ])
+        assert args.model == 'hat'
+        assert args.hat_size == 'large'
+
+    def test_parse_diffusion_args(self):
+        """Test parser accepts diffusion-specific arguments."""
+        parser = create_parser()
+        args = parser.parse_args([
+            'enhance-frames', '--input', 'f/', '--output', 'o/',
+            '--model', 'diffusion', '--diffusion-steps', '15',
+            '--diffusion-model', 'resshift',
+        ])
+        assert args.model == 'diffusion'
+        assert args.diffusion_steps == 15
+        assert args.diffusion_model == 'resshift'
+
+    def test_parse_ensemble_args(self):
+        """Test parser accepts ensemble-specific arguments."""
+        parser = create_parser()
+        args = parser.parse_args([
+            'enhance-frames', '--input', 'f/', '--output', 'o/',
+            '--model', 'ensemble', '--ensemble-models', 'hat,realesrgan',
+            '--ensemble-method', 'adaptive',
+        ])
+        assert args.model == 'ensemble'
+        assert args.ensemble_models == 'hat,realesrgan'
+        assert args.ensemble_method == 'adaptive'
+
+    def test_parse_defaults(self):
+        """Test new args have correct defaults."""
+        parser = create_parser()
+        args = parser.parse_args([
+            'enhance-frames', '--input', 'f/', '--output', 'o/',
+        ])
+        assert args.hat_size == 'large'
+        assert args.diffusion_steps == 20
+        assert args.diffusion_model == 'upscale_a_video'
+        assert args.ensemble_models == 'hat,realesrgan'
+        assert args.ensemble_method == 'weighted'
+
+    # -- Dispatch routing --
+
+    @pytest.fixture
+    def frames_dir(self, tmp_path):
+        d = tmp_path / "frames"
+        d.mkdir()
+        for i in range(3):
+            (d / f"frame_{i:04d}.png").write_bytes(b'\x89PNG' + b'\0' * 100)
+        return d
+
+    @patch('framewright.cli._enhance_with_hat')
+    def test_dispatches_to_hat(self, mock_hat, frames_dir, tmp_path):
+        """Model 'hat' dispatches to _enhance_with_hat."""
+        args = Mock(model='hat', input=str(frames_dir),
+                    output=str(tmp_path / 'out'), scale=4)
+        enhance_frames(args)
+        mock_hat.assert_called_once()
+
+    @patch('framewright.cli._enhance_with_diffusion')
+    def test_dispatches_to_diffusion(self, mock_diff, frames_dir, tmp_path):
+        """Model 'diffusion' dispatches to _enhance_with_diffusion."""
+        args = Mock(model='diffusion', input=str(frames_dir),
+                    output=str(tmp_path / 'out'), scale=4)
+        enhance_frames(args)
+        mock_diff.assert_called_once()
+
+    @patch('framewright.cli._enhance_with_ensemble')
+    def test_dispatches_to_ensemble(self, mock_ens, frames_dir, tmp_path):
+        """Model 'ensemble' dispatches to _enhance_with_ensemble."""
+        args = Mock(model='ensemble', input=str(frames_dir),
+                    output=str(tmp_path / 'out'), scale=4)
+        enhance_frames(args)
+        mock_ens.assert_called_once()
+
+    @patch('framewright.cli._enhance_with_realesrgan')
+    def test_defaults_to_realesrgan(self, mock_rgan, frames_dir, tmp_path):
+        """Model 'realesrgan-x4plus' dispatches to _enhance_with_realesrgan."""
+        args = Mock(model='realesrgan-x4plus', input=str(frames_dir),
+                    output=str(tmp_path / 'out'), scale=4)
+        enhance_frames(args)
+        mock_rgan.assert_called_once()
+
+    # -- Fallback behavior --
+
+    @patch('framewright.cli._enhance_with_realesrgan')
+    def test_hat_fallback_on_import_error(self, mock_rgan, frames_dir, tmp_path):
+        """HAT falls back to Real-ESRGAN when processor import fails."""
+        args = Mock(model='hat', hat_size='large',
+                    input=str(frames_dir), output=str(tmp_path / 'out'), scale=4)
+        with patch('framewright.cli._enhance_with_hat.__module__', 'framewright.cli'):
+            with patch.dict('sys.modules', {'framewright.processors.hat_upscaler': None}):
+                _enhance_with_hat(args, frames_dir, tmp_path / 'out', 4, 3)
+        mock_rgan.assert_called_once()
+
+    @patch('framewright.cli._enhance_with_realesrgan')
+    def test_diffusion_fallback_when_unavailable(self, mock_rgan, frames_dir, tmp_path):
+        """Diffusion falls back to Real-ESRGAN when is_available() is False."""
+        mock_proc = Mock()
+        mock_proc.is_available.return_value = False
+        mock_config = Mock()
+        with patch('framewright.processors.diffusion_sr.DiffusionSRProcessor', return_value=mock_proc):
+            with patch('framewright.processors.diffusion_sr.DiffusionSRConfig', return_value=mock_config):
+                _enhance_with_diffusion(args=Mock(diffusion_model='upscale_a_video', diffusion_steps=20),
+                                        input_dir=frames_dir, output_dir=tmp_path / 'out',
+                                        scale=4, frame_count=3)
+        mock_rgan.assert_called_once()
+
+    @patch('framewright.cli._enhance_with_realesrgan')
+    def test_ensemble_fallback_when_unavailable(self, mock_rgan, frames_dir, tmp_path):
+        """Ensemble falls back to Real-ESRGAN when < 2 models available."""
+        mock_ens = Mock()
+        mock_ens.is_available.return_value = False
+        mock_config = Mock()
+        with patch('framewright.processors.ensemble_sr.EnsembleSR', return_value=mock_ens):
+            with patch('framewright.processors.ensemble_sr.EnsembleConfig', return_value=mock_config):
+                _enhance_with_ensemble(args=Mock(ensemble_models='hat,realesrgan', ensemble_method='weighted'),
+                                       input_dir=frames_dir, output_dir=tmp_path / 'out',
+                                       scale=4, frame_count=3)
+        mock_rgan.assert_called_once()

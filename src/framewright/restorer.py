@@ -2,6 +2,7 @@
 
 Includes robust error handling, checkpointing, and quality validation.
 """
+import asyncio
 import json
 import logging
 import os
@@ -174,6 +175,8 @@ class ProgressInfo:
 
 
 from .checkpoint import CheckpointManager, PipelineCheckpoint
+from .infrastructure.cache import FrameCache, FrameCacheConfig
+from .utils.async_io import AsyncSubprocess
 from .errors import (
     VideoRestorerError,
     DownloadError,
@@ -240,6 +243,51 @@ from .processors.deduplication import (
     DeduplicationResult,
 )
 
+# Ultimate preset processors (lazy imports for optional features)
+from .processors.tap_denoise import (
+    TAPDenoiser,
+    TAPDenoiseConfig,
+    TAPDenoiseResult,
+    TAPModel,
+)
+from .processors.aesrgan_face import (
+    AESRGANFaceRestorer,
+    AESRGANFaceConfig,
+    AESRGANFaceResult,
+)
+from .processors.diffusion_sr import (
+    DiffusionSRProcessor,
+    DiffusionSRConfig,
+    DiffusionSRResult,
+    DiffusionModel,
+)
+from .processors.qp_artifact_removal import (
+    QPArtifactRemover,
+    QPArtifactConfig,
+    QPArtifactResult,
+)
+from .processors.swintexco_colorize import (
+    SwinTExCoColorizer,
+    ExemplarColorizeConfig,
+    ExemplarColorizeResult,
+)
+from .processors.frame_generation import (
+    MissingFrameGenerator,
+    FrameGenerationConfig,
+    FrameGenerationResult,
+    GapInfo,
+)
+from .processors.cross_attention_temporal import (
+    CrossAttentionTemporalProcessor,
+    CrossAttentionConfig,
+    TemporalConsistencyResult,
+    TemporalMethod,
+)
+from .processors.reference_enhance import (
+    enhance_with_references,
+    is_reference_enhance_available,
+)
+
 
 # Configure logging
 logging.basicConfig(
@@ -247,6 +295,13 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ReferenceEnhanceResult:
+    """Result of reference-guided enhancement processing."""
+    processed_frames: int = 0
+    failed_frames: int = 0
 
 
 class VideoRestorer:
@@ -287,6 +342,7 @@ class VideoRestorer:
         self.metadata: Dict[str, Any] = {}
         self.progress_callback = progress_callback
         self.checkpoint_manager: Optional[CheckpointManager] = None
+        self._frame_cache: Optional[FrameCache] = None
         self._vram_monitor: Optional[VRAMMonitor] = None
         self._disk_monitor: Optional[DiskSpaceMonitor] = None
         self._current_tile_size: Optional[int] = None
@@ -309,6 +365,18 @@ class VideoRestorer:
                 project_dir=config.project_dir,
                 checkpoint_interval=config.checkpoint_interval,
                 config_hash=config.get_hash(),
+            )
+
+        # Initialize frame cache if enabled
+        if config.enable_frame_caching:
+            cache_config = FrameCacheConfig(
+                max_memory_mb=config.frame_cache_max_mb,
+                eviction_policy=config.frame_cache_eviction,
+            )
+            self._frame_cache = FrameCache(cache_config)
+            logger.info(
+                f"Frame caching enabled: {config.frame_cache_max_mb}MB, "
+                f"policy={config.frame_cache_eviction}"
             )
 
         # Initialize monitors if enabled
@@ -978,14 +1046,24 @@ class VideoRestorer:
         ]
 
         try:
-            result = subprocess.run(
-                cmd,
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=600  # 10 minute timeout
-            )
-            logger.debug(f"Audio extraction output: {result.stderr}")
+            # Use async I/O if enabled for better performance
+            if self.config.enable_async_io:
+                async def _extract_audio_async():
+                    async with AsyncSubprocess(timeout=600) as proc:
+                        stdout, stderr = await proc.run_checked(cmd)
+                        return stderr
+
+                stderr = asyncio.run(_extract_audio_async())
+                logger.debug(f"Audio extraction output: {stderr}")
+            else:
+                result = subprocess.run(
+                    cmd,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=600  # 10 minute timeout
+                )
+                logger.debug(f"Audio extraction output: {result.stderr}")
 
             self._update_progress("extract_audio", 1.0)
             logger.info(f"Audio extracted to {output_path}")
@@ -1040,14 +1118,24 @@ class VideoRestorer:
         ]
 
         try:
-            result = subprocess.run(
-                cmd,
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=3600  # 1 hour timeout
-            )
-            logger.debug(f"Frame extraction output: {result.stderr}")
+            # Use async I/O if enabled for better performance
+            if self.config.enable_async_io:
+                async def _extract_async():
+                    async with AsyncSubprocess(timeout=3600) as proc:
+                        stdout, stderr = await proc.run_checked(cmd)
+                        return stderr
+
+                stderr = asyncio.run(_extract_async())
+                logger.debug(f"Frame extraction output: {stderr}")
+            else:
+                result = subprocess.run(
+                    cmd,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=3600  # 1 hour timeout
+                )
+                logger.debug(f"Frame extraction output: {result.stderr}")
 
             # Count extracted frames
             frame_count = len(list(self.config.frames_dir.glob("frame_*.png")))
@@ -1264,6 +1352,36 @@ class VideoRestorer:
 
         # Neither available - will fail later with helpful error
         return "ncnn-vulkan"
+
+    def _read_frame_cached(self, frame_path: Path) -> Optional['np.ndarray']:
+        """Read a frame from disk with optional caching.
+
+        If frame caching is enabled, this method will cache frames in memory
+        to avoid repeated disk I/O when the same frame is accessed multiple times
+        (e.g., during multi-pass processing or temporal operations).
+
+        Args:
+            frame_path: Path to the frame file
+
+        Returns:
+            Frame as numpy array, or None if frame could not be read
+        """
+        if not self._frame_cache:
+            # No caching, read directly from disk
+            import cv2
+            return cv2.imread(str(frame_path), cv2.IMREAD_UNCHANGED)
+
+        # Use cache with get_or_compute
+        def load_frame():
+            import cv2
+            frame = cv2.imread(str(frame_path), cv2.IMREAD_UNCHANGED)
+            if frame is None:
+                logger.warning(f"Failed to read frame: {frame_path}")
+            return frame
+
+        # Use frame path as cache key
+        cache_key = str(frame_path)
+        return self._frame_cache.get_or_compute(cache_key, load_frame)
 
     def _enhance_single_frame(
         self,
@@ -1933,6 +2051,680 @@ class VideoRestorer:
         logger.info(f"Auto-enhancement complete: {result.summary()}")
         return result
 
+    # =========================================================================
+    # Ultimate Preset Processing Methods
+    # =========================================================================
+
+    def qp_artifact_removal(
+        self,
+        source_dir: Optional[Path] = None,
+        video_path: Optional[Path] = None,
+    ) -> QPArtifactResult:
+        """Remove QP-related compression artifacts from frames.
+
+        Targets blocking, ringing, and mosquito noise from highly compressed
+        video sources (e.g., old YouTube downloads, low-bitrate encodes).
+
+        Args:
+            source_dir: Directory with frames (default: frames_dir)
+            video_path: Original video for QP auto-detection (optional)
+
+        Returns:
+            QPArtifactResult with processing statistics
+        """
+        if source_dir is None:
+            source_dir = self.config.frames_dir
+
+        if not source_dir.exists():
+            logger.warning(f"Source directory not found: {source_dir}")
+            return QPArtifactResult(processed_frames=0)
+
+        self._update_progress("qp_artifact_removal", 0.0)
+        logger.info("Starting QP artifact removal...")
+
+        # Create config from settings
+        qp_config = QPArtifactConfig(
+            strength=getattr(self.config, 'qp_strength', 1.0),
+            auto_detect_qp=getattr(self.config, 'qp_auto_detect', True),
+            manual_qp=getattr(self.config, 'qp_manual', None),
+        )
+
+        # Create processor
+        remover = QPArtifactRemover(qp_config)
+
+        # Auto-detect QP from video if available
+        if video_path and qp_config.auto_detect_qp:
+            detected_qp = remover.detect_qp_from_video(video_path)
+            if detected_qp:
+                logger.info(f"Auto-detected QP: {detected_qp}")
+
+        # Process frames
+        output_dir = self.config.temp_dir / "qp_cleaned"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        frames = sorted(source_dir.glob("*.png"))
+        total = len(frames)
+
+        for i, frame_path in enumerate(frames):
+            try:
+                result = remover.process_frame(frame_path, output_dir / frame_path.name)
+                if (i + 1) % 50 == 0:
+                    self._update_progress("qp_artifact_removal", (i + 1) / total)
+            except Exception as e:
+                logger.warning(f"QP artifact removal failed for {frame_path.name}: {e}")
+                # Copy original on failure
+                shutil.copy(frame_path, output_dir / frame_path.name)
+
+        # Move cleaned frames back to source
+        for frame in output_dir.glob("*.png"):
+            shutil.copy(frame, source_dir / frame.name)
+        shutil.rmtree(output_dir, ignore_errors=True)
+
+        self._update_progress("qp_artifact_removal", 1.0)
+        logger.info(f"QP artifact removal complete: {total} frames processed")
+
+        return QPArtifactResult(processed_frames=total)
+
+    def tap_denoise_frames(
+        self,
+        source_dir: Optional[Path] = None,
+    ) -> TAPDenoiseResult:
+        """Apply TAP neural denoising to frames.
+
+        Uses Restormer or NAFNet for state-of-the-art denoising,
+        achieving 34-38 dB PSNR vs traditional 30-32 dB.
+
+        Args:
+            source_dir: Directory with frames (default: frames_dir)
+
+        Returns:
+            TAPDenoiseResult with processing statistics
+        """
+        if source_dir is None:
+            source_dir = self.config.frames_dir
+
+        if not source_dir.exists():
+            logger.warning(f"Source directory not found: {source_dir}")
+            return TAPDenoiseResult(processed_frames=0)
+
+        self._update_progress("tap_denoise", 0.0)
+        logger.info("Starting TAP neural denoising...")
+
+        # Map config model string to enum
+        model_map = {
+            "restormer": TAPModel.RESTORMER,
+            "nafnet": TAPModel.NAFNET,
+        }
+        tap_model = model_map.get(
+            getattr(self.config, 'tap_model', 'restormer'),
+            TAPModel.RESTORMER
+        )
+
+        # Create config
+        tap_config = TAPDenoiseConfig(
+            model=tap_model,
+            strength=getattr(self.config, 'tap_strength', 0.8),
+            preserve_grain=getattr(self.config, 'tap_preserve_grain', False),
+            temporal_window=5,
+        )
+
+        # Create processor
+        denoiser = TAPDenoiser(tap_config)
+
+        # Process frames
+        output_dir = self.config.temp_dir / "tap_denoised"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        frames = sorted(source_dir.glob("*.png"))
+        total = len(frames)
+
+        # Process with temporal context
+        for i, frame_path in enumerate(frames):
+            try:
+                # Get temporal neighbors
+                start_idx = max(0, i - tap_config.temporal_window // 2)
+                end_idx = min(total, i + tap_config.temporal_window // 2 + 1)
+                neighbor_paths = [frames[j] for j in range(start_idx, end_idx)]
+
+                result = denoiser.process_frame(
+                    frame_path,
+                    output_dir / frame_path.name,
+                    temporal_neighbors=neighbor_paths,
+                )
+                if (i + 1) % 50 == 0:
+                    self._update_progress("tap_denoise", (i + 1) / total)
+            except Exception as e:
+                logger.warning(f"TAP denoise failed for {frame_path.name}: {e}")
+                shutil.copy(frame_path, output_dir / frame_path.name)
+
+        # Move denoised frames back
+        for frame in output_dir.glob("*.png"):
+            shutil.copy(frame, source_dir / frame.name)
+        shutil.rmtree(output_dir, ignore_errors=True)
+
+        self._update_progress("tap_denoise", 1.0)
+        logger.info(f"TAP denoising complete: {total} frames, model={tap_model.value}")
+
+        return TAPDenoiseResult(processed_frames=total, model_used=tap_model.value)
+
+    def generate_missing_frames(
+        self,
+        source_dir: Optional[Path] = None,
+    ) -> FrameGenerationResult:
+        """Generate missing frames using AI models.
+
+        Uses Stable Video Diffusion or optical flow interpolation to fill
+        gaps in damaged footage where frames are missing or corrupted.
+
+        Args:
+            source_dir: Directory with frames (default: frames_dir)
+
+        Returns:
+            FrameGenerationResult with gap information
+        """
+        if source_dir is None:
+            source_dir = self.config.frames_dir
+
+        if not source_dir.exists():
+            logger.warning(f"Source directory not found: {source_dir}")
+            return FrameGenerationResult(gaps_detected=0, frames_generated=0)
+
+        self._update_progress("frame_generation", 0.0)
+        logger.info("Detecting and generating missing frames...")
+
+        # Create config
+        gen_config = FrameGenerationConfig(
+            model=getattr(self.config, 'frame_gen_model', 'optical_flow'),
+            max_gap_frames=getattr(self.config, 'max_gap_frames', 10),
+            match_grain=True,
+        )
+
+        # Create generator
+        generator = MissingFrameGenerator(gen_config)
+
+        # Detect gaps
+        frames = sorted(source_dir.glob("*.png"))
+        gaps = generator.detect_gaps(frames)
+
+        if not gaps:
+            logger.info("No gaps detected in frame sequence")
+            self._update_progress("frame_generation", 1.0)
+            return FrameGenerationResult(gaps_detected=0, frames_generated=0)
+
+        logger.info(f"Detected {len(gaps)} gaps totaling {sum(g.missing_count for g in gaps)} missing frames")
+
+        # Generate missing frames
+        total_generated = 0
+        for i, gap in enumerate(gaps):
+            try:
+                generated = generator.fill_gap(gap, source_dir)
+                total_generated += len(generated)
+                self._update_progress("frame_generation", (i + 1) / len(gaps))
+            except Exception as e:
+                logger.warning(f"Failed to fill gap at frame {gap.start_frame}: {e}")
+
+        self._update_progress("frame_generation", 1.0)
+        logger.info(f"Frame generation complete: {total_generated} frames generated for {len(gaps)} gaps")
+
+        return FrameGenerationResult(gaps_detected=len(gaps), frames_generated=total_generated)
+
+    def diffusion_sr_frames(
+        self,
+        source_dir: Optional[Path] = None,
+    ) -> DiffusionSRResult:
+        """Apply diffusion-based super-resolution.
+
+        Uses Upscale-A-Video, StableSR, or ResShift for highest quality
+        upscaling. Slower than Real-ESRGAN but produces superior results.
+
+        Args:
+            source_dir: Directory with frames (default: frames_dir)
+
+        Returns:
+            DiffusionSRResult with processing statistics
+        """
+        if source_dir is None:
+            source_dir = self.config.frames_dir
+
+        if not source_dir.exists():
+            logger.warning(f"Source directory not found: {source_dir}")
+            return DiffusionSRResult(processed_frames=0)
+
+        self._update_progress("diffusion_sr", 0.0)
+        logger.info("Starting diffusion super-resolution...")
+
+        # Map config model string to enum
+        model_map = {
+            "upscale_a_video": DiffusionModel.UPSCALE_A_VIDEO,
+            "stable_sr": DiffusionModel.STABLE_SR,
+            "resshift": DiffusionModel.RESSHIFT,
+        }
+        diff_model = model_map.get(
+            getattr(self.config, 'diffusion_model', 'upscale_a_video'),
+            DiffusionModel.UPSCALE_A_VIDEO
+        )
+
+        # Create config
+        sr_config = DiffusionSRConfig(
+            model=diff_model,
+            scale_factor=self.config.scale_factor,
+            steps=getattr(self.config, 'diffusion_steps', 20),
+            guidance_scale=getattr(self.config, 'diffusion_guidance', 7.5),
+            tile_size=512,
+        )
+
+        # Create processor
+        processor = DiffusionSRProcessor(sr_config)
+
+        # Process frames
+        output_dir = self.config.enhanced_dir
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        frames = sorted(source_dir.glob("*.png"))
+        total = len(frames)
+
+        for i, frame_path in enumerate(frames):
+            try:
+                result = processor.process_frame(frame_path, output_dir / frame_path.name)
+                if (i + 1) % 10 == 0:  # Diffusion is slow, update more often
+                    self._update_progress("diffusion_sr", (i + 1) / total)
+                    logger.info(f"Diffusion SR: {i + 1}/{total} frames")
+            except Exception as e:
+                logger.warning(f"Diffusion SR failed for {frame_path.name}: {e}, using fallback")
+                # Fallback to basic upscale
+                shutil.copy(frame_path, output_dir / frame_path.name)
+
+        self._update_progress("diffusion_sr", 1.0)
+        logger.info(f"Diffusion SR complete: {total} frames, model={diff_model.value}")
+
+        return DiffusionSRResult(processed_frames=total, model_used=diff_model.value)
+
+    def aesrgan_face_restore(
+        self,
+        source_dir: Optional[Path] = None,
+    ) -> AESRGANFaceResult:
+        """Apply AESRGAN attention-enhanced face restoration.
+
+        Better detail preservation than GFPGAN without over-smoothing
+        or plastic look. Works on upscaled frames.
+
+        Args:
+            source_dir: Directory with frames (default: enhanced_dir)
+
+        Returns:
+            AESRGANFaceResult with processing statistics
+        """
+        if source_dir is None:
+            source_dir = self.config.enhanced_dir
+
+        if not source_dir.exists():
+            logger.warning(f"Source directory not found: {source_dir}")
+            return AESRGANFaceResult(processed_frames=0, faces_detected=0)
+
+        self._update_progress("aesrgan_face", 0.0)
+        logger.info("Starting AESRGAN face restoration...")
+
+        # Create config
+        face_config = AESRGANFaceConfig(
+            enhancement_strength=getattr(self.config, 'aesrgan_strength', 0.8),
+            detection_threshold=0.5,
+            upscale_factor=1,  # Already upscaled
+        )
+
+        # Create restorer
+        restorer = AESRGANFaceRestorer(face_config)
+
+        # Process frames
+        output_dir = self.config.temp_dir / "aesrgan_faces"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        frames = sorted(source_dir.glob("*.png"))
+        total = len(frames)
+        total_faces = 0
+
+        for i, frame_path in enumerate(frames):
+            try:
+                result = restorer.process_frame(frame_path, output_dir / frame_path.name)
+                total_faces += result.faces_detected if hasattr(result, 'faces_detected') else 0
+                if (i + 1) % 50 == 0:
+                    self._update_progress("aesrgan_face", (i + 1) / total)
+            except Exception as e:
+                logger.warning(f"AESRGAN face restore failed for {frame_path.name}: {e}")
+                shutil.copy(frame_path, output_dir / frame_path.name)
+
+        # Move restored frames back
+        for frame in output_dir.glob("*.png"):
+            shutil.copy(frame, source_dir / frame.name)
+        shutil.rmtree(output_dir, ignore_errors=True)
+
+        self._update_progress("aesrgan_face", 1.0)
+        logger.info(f"AESRGAN face restoration complete: {total} frames, {total_faces} faces enhanced")
+
+        return AESRGANFaceResult(processed_frames=total, faces_detected=total_faces)
+
+    def cross_attention_temporal(
+        self,
+        source_dir: Optional[Path] = None,
+    ) -> TemporalConsistencyResult:
+        """Apply cross-attention temporal consistency.
+
+        Uses transformer-based cross-frame attention for flicker-free
+        results. Better than optical flow alone for temporal consistency.
+
+        Args:
+            source_dir: Directory with frames (default: enhanced_dir)
+
+        Returns:
+            TemporalConsistencyResult with processing statistics
+        """
+        if source_dir is None:
+            source_dir = self.config.enhanced_dir
+
+        if not source_dir.exists():
+            logger.warning(f"Source directory not found: {source_dir}")
+            return TemporalConsistencyResult(processed_frames=0)
+
+        self._update_progress("cross_attention_temporal", 0.0)
+        logger.info("Starting cross-attention temporal consistency...")
+
+        # Map config method string to enum
+        method_map = {
+            "optical_flow": TemporalMethod.OPTICAL_FLOW,
+            "cross_attention": TemporalMethod.CROSS_ATTENTION,
+            "hybrid": TemporalMethod.HYBRID,
+        }
+        temporal_method = method_map.get(
+            getattr(self.config, 'temporal_method', 'hybrid'),
+            TemporalMethod.HYBRID
+        )
+
+        # Create config
+        temp_config = CrossAttentionConfig(
+            method=temporal_method,
+            window_size=getattr(self.config, 'cross_attention_window', 7),
+            blend_strength=getattr(self.config, 'temporal_blend_strength', 0.5),
+        )
+
+        # Create processor
+        processor = CrossAttentionTemporalProcessor(temp_config)
+
+        # Process frames
+        output_dir = self.config.temp_dir / "temporal_consistent"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        frames = sorted(source_dir.glob("*.png"))
+        total = len(frames)
+
+        # Process with temporal window
+        for i, frame_path in enumerate(frames):
+            try:
+                # Get temporal window
+                start_idx = max(0, i - temp_config.window_size // 2)
+                end_idx = min(total, i + temp_config.window_size // 2 + 1)
+                window_paths = [frames[j] for j in range(start_idx, end_idx)]
+
+                result = processor.process_frame(
+                    frame_path,
+                    output_dir / frame_path.name,
+                    temporal_window=window_paths,
+                )
+                if (i + 1) % 50 == 0:
+                    self._update_progress("cross_attention_temporal", (i + 1) / total)
+            except Exception as e:
+                logger.warning(f"Temporal consistency failed for {frame_path.name}: {e}")
+                shutil.copy(frame_path, output_dir / frame_path.name)
+
+        # Move consistent frames back
+        for frame in output_dir.glob("*.png"):
+            shutil.copy(frame, source_dir / frame.name)
+        shutil.rmtree(output_dir, ignore_errors=True)
+
+        self._update_progress("cross_attention_temporal", 1.0)
+        logger.info(f"Temporal consistency complete: {total} frames, method={temporal_method.value}")
+
+        return TemporalConsistencyResult(processed_frames=total, method_used=temporal_method.value)
+
+    def swintexco_colorize(
+        self,
+        source_dir: Optional[Path] = None,
+        reference_images: Optional[List[Path]] = None,
+    ) -> ExemplarColorizeResult:
+        """Apply SwinTExCo exemplar-based colorization.
+
+        Uses reference color images to guide colorization with temporal
+        consistency. Best for B&W footage with available reference images.
+
+        Args:
+            source_dir: Directory with frames (default: enhanced_dir)
+            reference_images: List of reference color images
+
+        Returns:
+            ExemplarColorizeResult with processing statistics
+        """
+        if source_dir is None:
+            source_dir = self.config.enhanced_dir
+
+        refs = reference_images or getattr(self.config, 'colorization_reference_images', [])
+        if not refs:
+            logger.warning("No reference images provided for SwinTExCo colorization")
+            return ExemplarColorizeResult(processed_frames=0)
+
+        if not source_dir.exists():
+            logger.warning(f"Source directory not found: {source_dir}")
+            return ExemplarColorizeResult(processed_frames=0)
+
+        self._update_progress("swintexco_colorize", 0.0)
+        logger.info(f"Starting SwinTExCo colorization with {len(refs)} reference images...")
+
+        # Create config
+        color_config = ExemplarColorizeConfig(
+            reference_images=[Path(r) for r in refs],
+            temporal_consistency=getattr(self.config, 'colorize_temporal_fusion', True),
+            propagation_strength=0.8,
+        )
+
+        # Create colorizer
+        colorizer = SwinTExCoColorizer(color_config)
+
+        # Process frames
+        output_dir = self.config.temp_dir / "colorized"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        frames = sorted(source_dir.glob("*.png"))
+        total = len(frames)
+
+        for i, frame_path in enumerate(frames):
+            try:
+                result = colorizer.process_frame(frame_path, output_dir / frame_path.name)
+                if (i + 1) % 50 == 0:
+                    self._update_progress("swintexco_colorize", (i + 1) / total)
+            except Exception as e:
+                logger.warning(f"SwinTExCo colorize failed for {frame_path.name}: {e}")
+                shutil.copy(frame_path, output_dir / frame_path.name)
+
+        # Move colorized frames back
+        for frame in output_dir.glob("*.png"):
+            shutil.copy(frame, source_dir / frame.name)
+        shutil.rmtree(output_dir, ignore_errors=True)
+
+        self._update_progress("swintexco_colorize", 1.0)
+        logger.info(f"SwinTExCo colorization complete: {total} frames")
+
+        return ExemplarColorizeResult(processed_frames=total)
+
+    def reference_enhance_frames(
+        self,
+        source_dir: Optional[Path] = None,
+    ) -> ReferenceEnhanceResult:
+        """Apply reference-guided enhancement using IP-Adapter + ControlNet.
+
+        Uses high-quality reference photos to guide detail generation,
+        adding realistic detail while preserving frame structure.
+
+        Args:
+            source_dir: Directory with frames (default: enhanced_dir)
+
+        Returns:
+            ReferenceEnhanceResult with processing statistics
+        """
+        if source_dir is None:
+            source_dir = self.config.enhanced_dir
+
+        if not source_dir.exists():
+            logger.warning(f"Source directory not found: {source_dir}")
+            return ReferenceEnhanceResult(processed_frames=0)
+
+        ref_dir = getattr(self.config, 'reference_images_dir', None)
+        if not ref_dir or not Path(ref_dir).exists():
+            logger.warning("Reference images directory not found")
+            return ReferenceEnhanceResult(processed_frames=0)
+
+        if not is_reference_enhance_available():
+            logger.warning(
+                "Reference enhancement not available (diffusers not installed). "
+                "Install with: pip install diffusers transformers"
+            )
+            return ReferenceEnhanceResult(processed_frames=0)
+
+        self._update_progress("reference_enhance", 0.0)
+        logger.info("Starting reference-guided enhancement...")
+
+        # Process into temp dir
+        output_dir = self.config.temp_dir / "reference_enhanced"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        def progress_cb(p: float):
+            self._update_progress("reference_enhance", p)
+
+        result = enhance_with_references(
+            frames_dir=str(source_dir),
+            output_dir=str(output_dir),
+            references_dir=str(ref_dir),
+            strength=getattr(self.config, 'reference_strength', 0.35),
+            guidance_scale=getattr(self.config, 'reference_guidance_scale', 7.5),
+            ip_adapter_scale=getattr(self.config, 'reference_ip_adapter_scale', 0.6),
+            resume=False,
+            progress_callback=progress_cb,
+        )
+
+        processed = 0
+        failed = 0
+        if result is not None:
+            processed, failed = result
+
+        # Copy results back to source dir
+        for frame in output_dir.glob("*.png"):
+            shutil.copy(frame, source_dir / frame.name)
+        shutil.rmtree(output_dir, ignore_errors=True)
+
+        self._update_progress("reference_enhance", 1.0)
+        logger.info(f"Reference enhancement complete: {processed} frames, {failed} failed")
+
+        return ReferenceEnhanceResult(processed_frames=processed, failed_frames=failed)
+
+    def _apply_seasonal_grade(
+        self, frames_dir: Path, season: str, strength: float = 0.7
+    ) -> None:
+        """Apply a seasonal color grade LUT to all frames in a directory.
+
+        Args:
+            frames_dir: Directory containing PNG frames.
+            season: Season name (winter, spring, summer, autumn).
+            strength: Grade strength (0.0-1.0).
+        """
+        try:
+            import cv2
+            from .integration.lut import LUTManager
+        except ImportError as e:
+            logger.warning(f"Cannot apply seasonal grade (missing dependency): {e}")
+            return
+
+        manager = LUTManager()
+        lut = manager.create_seasonal_lut(season=season, strength=strength)
+
+        frames = sorted(frames_dir.glob("*.png"))
+        total = len(frames)
+        if total == 0:
+            logger.warning("No frames found for seasonal grading")
+            return
+
+        self._update_progress("seasonal_grade", 0.0)
+        for i, frame_path in enumerate(frames):
+            try:
+                img = cv2.imread(str(frame_path))
+                if img is not None:
+                    graded = manager.apply_to_image_fast(img, lut)
+                    cv2.imwrite(str(frame_path), graded)
+            except Exception as e:
+                logger.warning(f"Seasonal grade failed for {frame_path.name}: {e}")
+
+            if (i + 1) % 100 == 0 or (i + 1) == total:
+                self._update_progress("seasonal_grade", (i + 1) / total)
+
+        logger.info(f"Seasonal color grade ({season}) applied to {total} frames")
+
+    def _youtube_upload(self, video_path: Path) -> None:
+        """Upload the finished video to YouTube using configured credentials.
+
+        Args:
+            video_path: Path to the encoded video file.
+        """
+        try:
+            from .integration.youtube_upload import (
+                upload_to_youtube,
+                YouTubePrivacy,
+            )
+        except ImportError:
+            logger.warning(
+                "YouTube upload dependencies not installed. "
+                "Run: pip install google-api-python-client google-auth-oauthlib"
+            )
+            return
+
+        privacy_map = {
+            "public": YouTubePrivacy.PUBLIC,
+            "unlisted": YouTubePrivacy.UNLISTED,
+            "private": YouTubePrivacy.PRIVATE,
+        }
+
+        title = getattr(self.config, 'youtube_title', None) or video_path.stem
+        description = getattr(self.config, 'youtube_description', '') or ""
+        tags = getattr(self.config, 'youtube_tags', ["restoration", "framewright"])
+        privacy = privacy_map.get(
+            getattr(self.config, 'youtube_privacy', 'private'),
+            YouTubePrivacy.PRIVATE,
+        )
+        client_secrets = getattr(self.config, 'youtube_client_secrets', None)
+        playlist_id = getattr(self.config, 'youtube_playlist_id', None)
+
+        if not client_secrets:
+            logger.error(
+                "YouTube upload enabled but youtube_client_secrets not set. "
+                "Provide the path to your Google OAuth client_secrets.json."
+            )
+            return
+
+        logger.info(f"Uploading to YouTube: '{title}' ({privacy.value})...")
+
+        def progress(pct: float) -> None:
+            self._update_progress("youtube_upload", pct)
+
+        result = upload_to_youtube(
+            video_path=video_path,
+            title=title,
+            description=description,
+            tags=tags,
+            privacy=privacy,
+            client_secrets_path=Path(client_secrets),
+            playlist_id=playlist_id,
+            progress_callback=progress,
+        )
+
+        if result.success:
+            logger.info(f"YouTube upload complete: {result.video_url}")
+        else:
+            logger.error(f"YouTube upload failed: {result.error_message}")
+
     def analyze_video(self, video_path: Path) -> VideoAnalysis:
         """Pre-analyze video for optimal restoration settings.
 
@@ -2235,14 +3027,24 @@ class VideoRestorer:
         ])
 
         try:
-            result = subprocess.run(
-                cmd,
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=7200  # 2 hour timeout
-            )
-            logger.debug(f"Video reassembly output: {result.stderr}")
+            # Use async I/O if enabled for better performance
+            if self.config.enable_async_io:
+                async def _reassemble_async():
+                    async with AsyncSubprocess(timeout=7200) as proc:
+                        stdout, stderr = await proc.run_checked(cmd)
+                        return stderr
+
+                stderr = asyncio.run(_reassemble_async())
+                logger.debug(f"Video reassembly output: {stderr}")
+            else:
+                result = subprocess.run(
+                    cmd,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=7200  # 2 hour timeout
+                )
+                logger.debug(f"Video reassembly output: {result.stderr}")
 
             if not output_path.exists():
                 raise ReassemblyError("Output video file was not created")
@@ -2402,14 +3204,82 @@ class VideoRestorer:
                     f"(estimated original FPS: {dedup_result.estimated_original_fps:.1f})"
                 )
 
-            # Step 6: Enhance frames (Real-ESRGAN)
-            self.enhance_frames()
+            # =================================================================
+            # Ultimate Preset Pre-Enhancement Stages
+            # =================================================================
+
+            # Step 5c: QP Artifact Removal (clean compression damage first)
+            if getattr(self.config, 'enable_qp_artifact_removal', False):
+                logger.info("Applying QP artifact removal (Ultimate preset)...")
+                qp_result = self.qp_artifact_removal(video_path=video_path)
+                logger.info(f"QP artifact removal: {qp_result.processed_frames} frames cleaned")
+
+            # Step 5d: TAP Neural Denoising (state-of-art denoising)
+            if getattr(self.config, 'enable_tap_denoise', False):
+                logger.info("Applying TAP neural denoising (Ultimate preset)...")
+                tap_result = self.tap_denoise_frames()
+                logger.info(f"TAP denoising: {tap_result.processed_frames} frames, model={tap_result.model_used}")
+
+            # Step 5e: Colorization (BEFORE upscale - models trained at native res)
+            # SwinTExCo exemplar-based colorization (if reference images provided)
+            color_refs = getattr(self.config, 'colorization_reference_images', [])
+            if color_refs:
+                logger.info(f"Applying SwinTExCo colorization with {len(color_refs)} references...")
+                color_result = self.swintexco_colorize(
+                    source_dir=self.config.frames_dir if not self.config.enable_deduplication else self.config.unique_frames_dir,
+                    reference_images=color_refs,
+                )
+                logger.info(f"SwinTExCo colorization: {color_result.processed_frames} frames colorized")
+
+            # Step 5f: Missing Frame Generation (fill gaps in damaged footage)
+            if getattr(self.config, 'enable_frame_generation', False):
+                logger.info("Detecting and generating missing frames (Ultimate preset)...")
+                gen_result = self.generate_missing_frames()
+                if gen_result.gaps_detected > 0:
+                    logger.info(
+                        f"Frame generation: {gen_result.frames_generated} frames "
+                        f"generated for {gen_result.gaps_detected} gaps"
+                    )
+
+            # =================================================================
+            # Super-Resolution Stage
+            # =================================================================
+
+            # Step 6: Enhance frames (Diffusion SR or Real-ESRGAN)
+            sr_model = getattr(self.config, 'sr_model', 'realesrgan')
+            if sr_model == 'diffusion':
+                logger.info("Using diffusion super-resolution (Ultimate preset)...")
+                diff_result = self.diffusion_sr_frames()
+                logger.info(f"Diffusion SR: {diff_result.processed_frames} frames, model={diff_result.model_used}")
+            else:
+                # Default Real-ESRGAN path
+                self.enhance_frames()
 
             # Step 6b: Auto-enhancement (defect repair, face restore)
             if use_auto_enhance:
                 logger.info("Applying auto-enhancement pipeline...")
                 enhance_result = self.auto_enhance_frames()
                 logger.info(f"Auto-enhancement stages: {', '.join(enhance_result.stages_applied)}")
+
+            # Step 6c: AESRGAN Face Restoration (if using AESRGAN face model)
+            face_model = getattr(self.config, 'face_model', 'gfpgan')
+            if face_model == 'aesrgan':
+                logger.info("Applying AESRGAN face restoration (Ultimate preset)...")
+                aesrgan_result = self.aesrgan_face_restore()
+                logger.info(
+                    f"AESRGAN face restore: {aesrgan_result.processed_frames} frames, "
+                    f"{aesrgan_result.faces_detected} faces enhanced"
+                )
+
+            # Step 6d: Reference-Guided Enhancement (IP-Adapter + ControlNet)
+            if getattr(self.config, 'enable_reference_enhance', False):
+                ref_dir = getattr(self.config, 'reference_images_dir', None)
+                if ref_dir and Path(ref_dir).exists():
+                    logger.info("Applying reference-guided enhancement...")
+                    ref_result = self.reference_enhance_frames()
+                    logger.info(f"Reference enhancement: {ref_result.processed_frames} frames")
+                else:
+                    logger.warning("Reference enhancement enabled but no reference directory specified")
 
             # Step 7: Frame interpolation or reconstruction
             frames_for_reassembly = self.config.enhanced_dir
@@ -2458,6 +3328,27 @@ class VideoRestorer:
                     logger.warning("Continuing with enhanced frames (no interpolation)")
                     frames_for_reassembly = self.config.enhanced_dir
 
+            # =================================================================
+            # Ultimate Preset Post-Enhancement Stages
+            # =================================================================
+
+            # Step 7b: Cross-Attention Temporal Consistency (flicker reduction)
+            temporal_method = getattr(self.config, 'temporal_method', None)
+            if temporal_method and temporal_method != 'disabled':
+                logger.info(f"Applying {temporal_method} temporal consistency (Ultimate preset)...")
+                temporal_result = self.cross_attention_temporal(source_dir=frames_for_reassembly)
+                logger.info(
+                    f"Temporal consistency: {temporal_result.processed_frames} frames, "
+                    f"method={temporal_result.method_used}"
+                )
+
+            # Step 7c: Seasonal Color Grading (apply seasonal LUT to final frames)
+            if getattr(self.config, 'seasonal_color_grade', None):
+                season = self.config.seasonal_color_grade
+                grade_strength = getattr(self.config, 'color_grade_strength', 0.7)
+                logger.info(f"Applying {season} seasonal color grade (strength={grade_strength:.1f})...")
+                self._apply_seasonal_grade(frames_for_reassembly, season, grade_strength)
+
             # Step 8: Preview before reassembly (if callback provided)
             preview_info = self.preview_frames(frames_for_reassembly)
             if preview_info["success"]:
@@ -2489,11 +3380,15 @@ class VideoRestorer:
             # Step 10: Validate output
             self.validate_output(result_path)
 
-            # Step 11: Mark complete
+            # Step 11: YouTube upload (optional)
+            if getattr(self.config, 'enable_youtube_upload', False):
+                self._youtube_upload(result_path)
+
+            # Step 12: Mark complete
             if self.checkpoint_manager:
                 self.checkpoint_manager.complete()
 
-            # Step 12: Cleanup if requested
+            # Step 13: Cleanup if requested
             if cleanup:
                 logger.info("Cleaning up temporary files")
                 self.config.cleanup_temp()

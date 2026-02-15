@@ -202,15 +202,12 @@ class RunPodProvider(CloudProvider):
             file_size = local_path.stat().st_size
             remote_name = f"input/{uuid.uuid4().hex[:8]}_{local_path.name}"
 
-            # For actual implementation, you would:
-            # 1. Get pod network volume path
-            # 2. Use SSH/SCP to transfer file
-            # 3. Or use RunPod's S3-compatible storage if available
-
-            # Placeholder for now
-            raise NotImplementedError(
-                "Pod mode upload not yet implemented. "
-                "Use external storage (S3) with serverless mode."
+            # Pod mode file transfer requires SSH/SCP access to pod network volumes.
+            # This is not currently supported. Use serverless mode instead.
+            raise StorageError(
+                "Pod mode file upload is not supported. "
+                "Please use serverless mode with external storage (S3, GCS, Azure). "
+                "Set use_serverless=True and upload files to your cloud storage first."
             )
 
         except Exception as e:
@@ -240,8 +237,13 @@ class RunPodProvider(CloudProvider):
                 "Use the appropriate CloudStorageProvider to download."
             )
 
-        # Pod mode download would go here
-        raise NotImplementedError("Pod mode download not yet implemented.")
+        # Pod mode file transfer requires SSH/SCP access to pod network volumes.
+        # This is not currently supported. Use serverless mode instead.
+        raise StorageError(
+            "Pod mode file download is not supported. "
+            "Please use serverless mode with external storage (S3, GCS, Azure). "
+            "Results will be available at the output path specified in your job config."
+        )
 
     def submit_job(self, config: ProcessingConfig) -> str:
         """Submit a video processing job to RunPod.

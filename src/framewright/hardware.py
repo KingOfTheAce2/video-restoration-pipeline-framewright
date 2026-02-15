@@ -421,10 +421,10 @@ def print_hardware_report(report: HardwareReport) -> str:
         Formatted string for display
     """
     status_icons = {
-        "ready": "✅",
-        "limited": "⚠️",
-        "incompatible": "❌",
-        "unknown": "❓",
+        "ready": "[OK]",
+        "limited": "[!!]",
+        "incompatible": "[X]",
+        "unknown": "[?]",
     }
 
     lines = [
@@ -433,16 +433,16 @@ def print_hardware_report(report: HardwareReport) -> str:
         "  FrameWright Hardware Compatibility Report",
         "=" * 60,
         "",
-        "📊 SYSTEM INFORMATION",
-        "─" * 40,
+        "SYSTEM INFORMATION",
+        "-" * 40,
         f"  OS:        {report.system.os_name} {report.system.os_version}",
         f"  Python:    {report.system.python_version}",
         f"  CPU:       {report.system.cpu_name}",
         f"  Cores:     {report.system.cpu_cores}",
         f"  RAM:       {report.system.ram_total_gb:.1f} GB total, {report.system.ram_available_gb:.1f} GB available",
         "",
-        "🎮 GPU INFORMATION",
-        "─" * 40,
+        "GPU INFORMATION",
+        "-" * 40,
     ]
 
     if report.gpu.has_gpu:
@@ -476,44 +476,44 @@ def print_hardware_report(report: HardwareReport) -> str:
 
     lines.extend([
         "",
-        "💾 STORAGE",
-        "─" * 40,
+        "STORAGE",
+        "-" * 40,
         f"  Free:      {report.disk_free_gb:.1f} GB",
         "",
-        "📦 DEPENDENCIES",
-        "─" * 40,
+        "DEPENDENCIES",
+        "-" * 40,
     ])
 
     if report.dependencies_ok:
-        lines.append("  ✅ All required dependencies installed")
+        lines.append("  [OK] All required dependencies installed")
     else:
-        lines.append("  ❌ Missing dependencies:")
+        lines.append("  [X] Missing dependencies:")
         for dep in report.missing_dependencies:
-            lines.append(f"      • {dep}")
+            lines.append(f"      - {dep}")
 
     if report.warnings:
         lines.extend([
             "",
-            "⚠️  WARNINGS",
-            "─" * 40,
+            "WARNINGS",
+            "-" * 40,
         ])
         for warning in report.warnings:
-            lines.append(f"  • {warning}")
+            lines.append(f"  - {warning}")
 
     if report.recommendations:
         lines.extend([
             "",
-            "💡 RECOMMENDATIONS",
-            "─" * 40,
+            "RECOMMENDATIONS",
+            "-" * 40,
         ])
         for rec in report.recommendations:
-            lines.append(f"  • {rec}")
+            lines.append(f"  - {rec}")
 
     lines.extend([
         "",
-        "─" * 60,
-        f"  Overall Status: {status_icons.get(report.overall_status, '❓')} {report.overall_status.upper()}",
-        "─" * 60,
+        "-" * 60,
+        f"  Overall Status: {status_icons.get(report.overall_status, '[?]')} {report.overall_status.upper()}",
+        "-" * 60,
         "",
     ])
 

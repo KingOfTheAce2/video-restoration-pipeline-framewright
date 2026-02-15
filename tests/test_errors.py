@@ -36,11 +36,13 @@ class TestErrorHierarchy:
         error = ResourceError("test")
         assert isinstance(error, TransientError)
 
-    def test_vram_error_is_resource_error(self):
-        """Test VRAMError inherits from ResourceError."""
+    def test_vram_error_is_gpu_error(self):
+        """Test VRAMError inherits from GPUError and HardwareError."""
+        from framewright.errors import GPUError, HardwareError
         error = VRAMError("test")
-        assert isinstance(error, ResourceError)
-        assert isinstance(error, TransientError)
+        assert isinstance(error, GPUError)
+        assert isinstance(error, HardwareError)
+        assert error.is_transient is True
 
     def test_fatal_error_is_video_restorer_error(self):
         """Test FatalError inherits from VideoRestorerError."""
@@ -285,7 +287,7 @@ class TestRetryableOperation:
         )
 
         # Mock sleep to speed up test
-        with patch('framewright.errors.time.sleep'):
+        with patch('framewright.core.errors.time.sleep'):
             result = op.execute(flaky)
 
         assert result == "success"
@@ -314,7 +316,7 @@ class TestRetryableOperation:
             on_vram_error=on_vram,
         )
 
-        with patch('framewright.errors.time.sleep'):
+        with patch('framewright.core.errors.time.sleep'):
             result = op.execute(vram_hungry)
 
         assert result == "success"

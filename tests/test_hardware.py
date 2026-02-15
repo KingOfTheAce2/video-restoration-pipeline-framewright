@@ -49,19 +49,19 @@ class TestGPUInfo:
 
     def test_gpu_no_nvidia_smi(self):
         """Test handling when nvidia-smi is not available."""
-        with patch("framewright.hardware.subprocess.run", side_effect=FileNotFoundError):
-            info = get_gpu_capability()
-            assert info.has_gpu is False
-            assert info.cuda_available is False
+        with patch("framewright.utils.gpu.shutil.which", return_value=None):
+            with patch("framewright.utils.gpu.get_windows_gpu_info", return_value=[]):
+                info = get_gpu_capability()
+                assert info.has_gpu is False
+                assert info.cuda_available is False
 
     def test_gpu_nvidia_smi_error(self):
         """Test handling when nvidia-smi returns error."""
-        mock_result = MagicMock()
-        mock_result.returncode = 1
-        mock_result.stdout = ""
-        with patch("framewright.hardware.subprocess.run", return_value=mock_result):
-            info = get_gpu_capability()
-            assert info.has_gpu is False
+        with patch("framewright.hardware.is_nvidia_gpu_available", return_value=False):
+            with patch("framewright.utils.gpu.is_nvidia_gpu_available", return_value=False):
+                with patch("framewright.utils.gpu.get_windows_gpu_info", return_value=[]):
+                    info = get_gpu_capability()
+                    assert info.has_gpu is False
 
 
 class TestHardwareReport:

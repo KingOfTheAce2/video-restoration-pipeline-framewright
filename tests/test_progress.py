@@ -123,14 +123,18 @@ class TestGPUMonitor:
 
     def test_fallback_no_gpu(self):
         """Test fallback when no GPU is available."""
-        from framewright.utils.progress import GPUMonitor
+        from framewright.utils.progress import GPUMonitor, GPUMetrics
 
+        # Mock _init_backend to prevent any real GPU initialization
+        with patch.object(GPUMonitor, "_init_backend"):
+            monitor = GPUMonitor()
+            monitor._initialized = False
+            monitor._handle = None
+
+        # Mock nvidia-smi as unavailable for the fallback path
         with patch("shutil.which", return_value=None):
-            with patch.dict("sys.modules", {"pynvml": None}):
-                monitor = GPUMonitor()
-                metrics = monitor.get_metrics()
-
-                assert not metrics.available
+            metrics = monitor.get_metrics()
+            assert not metrics.available
 
     def test_nvidia_smi_fallback(self):
         """Test nvidia-smi fallback metrics."""

@@ -60,6 +60,195 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "scratch_sensitivity": 0.7,
         "grain_reduction": 0.4,
     },
+    "ultimate": {
+        # Maximum quality preset for powerful hardware (RTX 5090 / 32GB+ VRAM)
+        "scale_factor": 4,
+        "model_name": "realesrgan-x4plus",
+        "crf": 14,  # Near-lossless
+        "preset": "veryslow",
+        "parallel_frames": 1,  # Sequential for quality
+        "enable_checkpointing": True,
+        "enable_validation": True,
+        "min_ssim_threshold": 0.92,
+        "min_psnr_threshold": 35.0,
+        # Enable all cutting-edge features
+        "enable_tap_denoise": True,
+        "tap_model": "restormer",
+        "tap_strength": 0.8,
+        "enable_qp_artifact_removal": True,
+        "qp_strength": 1.0,
+        "sr_model": "realesrgan",  # Or "diffusion" for maximum quality
+        "face_model": "aesrgan",
+        "auto_face_restore": True,
+        "temporal_method": "hybrid",
+        "cross_attention_window": 7,
+        "enable_auto_enhance": True,
+        "auto_defect_repair": True,
+        "scratch_sensitivity": 0.8,
+        "grain_reduction": 0.3,
+        # v2.0 features
+        "enable_scene_intelligence": True,
+        "enable_vmaf_analysis": True,
+    },
+    "authentic": {
+        # Authentic restoration preset - preserves period character
+        # For historic footage that shouldn't look "too modern"
+        "scale_factor": 2,  # Conservative upscale
+        "model_name": "realesrgan-x2plus",
+        "crf": 16,
+        "preset": "slow",
+        "parallel_frames": 2,
+        "enable_checkpointing": True,
+        "enable_validation": True,
+        # Authenticity preservation
+        "enable_authenticity_guard": True,
+        "preserve_era_character": True,
+        "max_enhancement_strength": 0.5,
+        "preserve_grain": True,
+        "grain_preservation_level": 0.6,
+        # Conservative processing
+        "enable_tap_denoise": True,
+        "tap_model": "nafnet",
+        "tap_strength": 0.4,
+        "tap_preserve_grain": True,
+        "face_model": "codeformer",
+        "auto_face_restore": True,
+        "grain_reduction": 0.2,  # Minimal grain reduction
+        "temporal_method": "optical_flow",
+        "enable_scene_intelligence": True,
+    },
+    "vhs": {
+        # VHS/analog tape restoration preset
+        "scale_factor": 2,
+        "model_name": "realesrgan-x2plus",
+        "crf": 18,
+        "preset": "medium",
+        "parallel_frames": 2,
+        "enable_checkpointing": True,
+        # VHS-specific restoration
+        "enable_vhs_restoration": True,
+        "vhs_remove_tracking": True,
+        "vhs_remove_dropout": True,
+        "vhs_fix_chroma": True,
+        "vhs_tbc_simulation": True,
+        "vhs_remove_dot_crawl": True,
+        # Additional processing
+        "enable_tap_denoise": True,
+        "tap_model": "nafnet",
+        "tap_strength": 0.6,
+        "temporal_method": "optical_flow",
+        "enable_scene_intelligence": True,
+    },
+    "archive": {
+        # Optimized for archive/historical footage restoration
+        # Includes missing frame generation and old film specific features
+        "scale_factor": 4,
+        "model_name": "realesrgan-x4plus",
+        "crf": 14,
+        "preset": "veryslow",
+        "parallel_frames": 1,
+        "enable_checkpointing": True,
+        "enable_validation": True,
+        "min_ssim_threshold": 0.90,
+        "min_psnr_threshold": 32.0,
+        # Archive-specific features
+        "enable_deduplication": True,  # Remove duplicate frames from padded FPS
+        "deduplication_threshold": 0.98,
+        "enable_frame_generation": True,  # Generate missing/damaged frames
+        "frame_gen_model": "optical_flow_warp",  # SVD for best quality (requires more VRAM)
+        "max_gap_frames": 10,  # Maximum frames to generate in a gap
+        # Full restoration pipeline
+        "enable_tap_denoise": True,
+        "tap_model": "restormer",
+        "tap_strength": 0.9,  # Stronger for archive footage
+        "tap_preserve_grain": True,  # Preserve film grain character
+        "enable_qp_artifact_removal": True,
+        "qp_strength": 0.8,
+        "sr_model": "realesrgan",
+        "face_model": "aesrgan",
+        "auto_face_restore": True,
+        "temporal_method": "hybrid",
+        "cross_attention_window": 9,  # Wider window for better consistency
+        "temporal_blend_strength": 0.6,
+        # Defect repair for scratches/dust
+        "enable_auto_enhance": True,
+        "auto_defect_repair": True,
+        "scratch_sensitivity": 0.85,
+        "dust_sensitivity": 0.75,
+        "grain_reduction": 0.2,  # Preserve some grain for authenticity
+        # Frame interpolation for smoother playback
+        "enable_interpolation": True,
+        "target_fps": 24,  # Standard film rate
+    },
+    "rtx5090": {
+        # RTX 5090 / High-End GPU preset (32GB+ VRAM, 64GB+ RAM)
+        # Maximum quality with no compromises - full resolution, large temporal windows
+        "scale_factor": 4,
+        "model_name": "realesrgan-x4plus",
+        "crf": 12,  # Near-lossless quality
+        "preset": "veryslow",
+        "parallel_frames": 1,  # Sequential for maximum quality
+        "enable_checkpointing": True,
+        "enable_validation": True,
+        "min_ssim_threshold": 0.95,
+        "min_psnr_threshold": 38.0,
+        # No tiling - process full resolution with 32GB VRAM
+        "tile_size": None,  # Disable tiling entirely
+        # Super-Resolution: Use HAT or VRT for maximum quality
+        "sr_model": "hat",  # HAT > VRT > Real-ESRGAN for quality
+        "enable_ensemble_sr": True,  # Run multiple models and vote
+        "ensemble_models": ["hat", "vrt", "realesrgan"],
+        "ensemble_voting": "weighted",  # weighted, max_quality, per_region
+        # Extended temporal windows (2-3x normal for better consistency)
+        "temporal_window": 16,  # Standard is 7, RTX 5090 can handle 16+
+        "cross_attention_window": 16,  # Match temporal window
+        "temporal_method": "hybrid",
+        "temporal_blend_strength": 0.7,
+        # RAFT optical flow (better than Farneback)
+        "optical_flow_method": "raft",
+        "enable_bidirectional_flow": True,
+        # TAP Neural Denoising with maximum quality
+        "enable_tap_denoise": True,
+        "tap_model": "restormer",
+        "tap_strength": 0.85,
+        "tap_temporal_window": 9,  # Extended temporal context
+        # QP Artifact Removal for YouTube/compressed sources
+        "enable_qp_artifact_removal": True,
+        "qp_strength": 1.0,
+        "qp_adaptive": True,
+        # Face Enhancement with AESRGAN
+        "face_model": "aesrgan",
+        "auto_face_restore": True,
+        "aesrgan_strength": 0.9,
+        # Colorization with temporal consistency
+        "colorization_model": "ddcolor",
+        "enable_temporal_colorization": True,  # Bidirectional color fusion
+        "colorization_temporal_window": 7,
+        "colorization_propagation": "bidirectional",
+        # Diffusion-based enhancement for maximum quality
+        "enable_diffusion_sr": True,
+        "diffusion_steps": 30,
+        "diffusion_guidance": 7.5,
+        # Full defect repair
+        "enable_auto_enhance": True,
+        "auto_defect_repair": True,
+        "scratch_sensitivity": 0.9,
+        "dust_sensitivity": 0.85,
+        "grain_reduction": 0.25,
+        # Scene intelligence for adaptive processing
+        "enable_scene_intelligence": True,
+        "enable_vmaf_analysis": True,
+        # Frame interpolation with RIFE v4.6
+        "enable_interpolation": True,
+        "target_fps": 60,  # High FPS output
+        "rife_model": "rife-v4.6",
+        # Archive features
+        "enable_deduplication": True,
+        "deduplication_threshold": 0.98,
+        "enable_frame_generation": True,
+        "frame_gen_model": "svd",  # Use Stable Video Diffusion for missing frames
+        "max_gap_frames": 15,
+    },
 }
 
 
@@ -146,6 +335,14 @@ class Config:
     parallel_frames: int = 1
     continue_on_error: bool = True  # Continue processing even if some frames fail
 
+    # Frame caching options (performance optimization)
+    enable_frame_caching: bool = True  # Cache intermediate frames to avoid reprocessing
+    frame_cache_max_mb: int = 2048  # Maximum memory for frame cache (in MB)
+    frame_cache_eviction: str = "lru"  # Eviction policy: lru, lfu, fifo, size
+
+    # Async I/O options (performance optimization)
+    enable_async_io: bool = True  # Use async I/O for FFmpeg calls (15-20% faster)
+
     # GPU selection and multi-GPU distribution options
     require_gpu: bool = True  # Require GPU for processing - blocks CPU fallback to prevent runaway CPU usage
     gpu_id: Optional[int] = None  # Select specific GPU by index (--gpu N), None = auto-select
@@ -199,6 +396,214 @@ class Config:
     subtitle_region: str = "bottom_third"  # bottom_third, bottom_quarter, top_quarter, full_frame
     subtitle_ocr_engine: str = "auto"  # auto, easyocr, tesseract, paddleocr
     subtitle_languages: List[str] = field(default_factory=lambda: ["en"])
+
+    # TAP Neural Denoising (advanced - Restormer/NAFNet with temporal attention)
+    enable_tap_denoise: bool = False
+    tap_model: str = "restormer"  # restormer, nafnet, tap
+    tap_strength: float = 1.0  # Denoising strength (0-1)
+    tap_preserve_grain: bool = False  # Preserve film grain character
+
+    # Super-Resolution Model Selection
+    sr_model: str = "realesrgan"  # realesrgan, diffusion, basicvsr
+    diffusion_steps: int = 20  # Number of diffusion steps (for diffusion SR)
+    diffusion_guidance: float = 7.5  # Classifier-free guidance scale
+
+    # Face Enhancement Model Selection
+    face_model: str = "gfpgan"  # gfpgan, codeformer, aesrgan
+    aesrgan_strength: float = 0.8  # AESRGAN enhancement strength
+
+    # QP-Aware Codec Artifact Removal
+    enable_qp_artifact_removal: bool = False
+    qp_auto_detect: bool = True  # Auto-detect QP from video metadata
+    qp_strength: float = 1.0  # Artifact removal strength multiplier
+
+    # Exemplar-Based Colorization (SwinTExCo)
+    colorization_reference_images: List[Path] = field(default_factory=list)
+    colorization_temporal_fusion: bool = True  # Enable temporal consistency
+
+    # Reference-Guided Enhancement (IP-Adapter + ControlNet)
+    enable_reference_enhance: bool = False
+    reference_images_dir: Optional[Path] = None
+    reference_strength: float = 0.35
+    reference_guidance_scale: float = 7.5
+    reference_ip_adapter_scale: float = 0.6
+
+    # Missing Frame Generation
+    enable_frame_generation: bool = False
+    frame_gen_model: str = "interpolate_blend"  # svd, optical_flow_warp, interpolate_blend
+    max_gap_frames: int = 10  # Maximum frames to generate in a gap
+
+    # Enhanced Temporal Consistency (Cross-Frame Attention)
+    temporal_method: str = "optical_flow"  # optical_flow, cross_attention, hybrid, raft
+    cross_attention_window: int = 7  # Frames for attention window
+    temporal_blend_strength: float = 0.8  # Temporal blending strength
+    temporal_window: int = 7  # General temporal window size
+
+    # RAFT Optical Flow (better than Farneback)
+    optical_flow_method: str = "farneback"  # farneback, dis, raft
+    enable_bidirectional_flow: bool = False  # Use bidirectional flow estimation
+
+    # Temporal Colorization Consistency
+    enable_temporal_colorization: bool = False  # Apply temporal consistency to colorization
+    colorization_temporal_window: int = 7  # Frames for color propagation
+    colorization_propagation: str = "bidirectional"  # forward, backward, bidirectional
+
+    # HAT Upscaler (Hybrid Attention Transformer)
+    enable_hat: bool = False  # Use HAT instead of Real-ESRGAN
+    hat_model_size: str = "large"  # small, base, large
+
+    # Ensemble Super-Resolution
+    enable_ensemble_sr: bool = False  # Run multiple SR models and combine
+    ensemble_models: List[str] = field(default_factory=lambda: ["hat", "realesrgan"])
+    ensemble_voting: str = "weighted"  # weighted, max_quality, per_region, median
+
+    # ==================== v2.0 ADVANCED FEATURES ====================
+
+    # Authenticity Preservation (prevents over-processing of historic footage)
+    enable_authenticity_guard: bool = False  # Enable era-aware processing limits
+    preserve_era_character: bool = True  # Maintain period-appropriate aesthetics
+    auto_detect_era: bool = True  # Automatically detect footage era
+    source_era: Optional[str] = None  # Manual: silent_film, early_talkies, golden_age, etc.
+    max_enhancement_strength: float = 0.7  # Global limit on enhancement intensity
+    preserve_grain: bool = False  # Preserve film grain character
+    grain_preservation_level: float = 0.5  # How much grain to keep (0=none, 1=all)
+
+    # AI Scene Intelligence (content-aware adaptive processing)
+    enable_scene_intelligence: bool = False  # Enable AI content analysis
+    scene_detect_faces: bool = True  # Detect and enhance faces
+    scene_detect_text: bool = True  # Detect and preserve text/titles
+    scene_adaptive_settings: bool = True  # Adjust settings per scene type
+
+    # VHS/Analog Restoration
+    enable_vhs_restoration: bool = False  # Enable VHS-specific processing
+    vhs_auto_detect_format: bool = True  # Auto-detect VHS, Betamax, Hi8, etc.
+    vhs_source_format: str = "vhs"  # vhs, betamax, hi8, video8, umatic
+    vhs_remove_tracking: bool = True  # Fix tracking line artifacts
+    vhs_remove_dropout: bool = True  # Repair dropout regions
+    vhs_fix_chroma: bool = True  # Fix color bleeding/delay
+    vhs_tbc_simulation: bool = True  # Time base corrector simulation
+    vhs_remove_dot_crawl: bool = True  # Remove composite video artifacts
+    vhs_preserve_character: bool = True  # Don't over-process analog character
+
+    # Quality Analysis (VMAF, heatmaps)
+    enable_vmaf_analysis: bool = False  # Calculate VMAF scores
+    vmaf_model: str = "vmaf_v0.6.1"  # VMAF model version
+    enable_quality_heatmaps: bool = False  # Generate quality heatmaps
+    quality_report_format: str = "html"  # html, json, both
+
+    # Webhook Notifications
+    enable_webhooks: bool = False  # Enable webhook notifications
+    webhook_config_path: Optional[Path] = None  # Path to webhook config JSON
+
+    # Distributed Processing
+    enable_distributed: bool = False  # Enable distributed render farm
+    coordinator_address: Optional[str] = None  # Coordinator server address
+    worker_mode: bool = False  # Run as worker node
+    chunk_size: int = 100  # Frames per work chunk
+
+    # LUT Integration
+    input_lut_path: Optional[Path] = None  # LUT to apply before processing
+    output_lut_path: Optional[Path] = None  # LUT to apply after processing
+
+    # Seasonal Color Grading (applied after colorization, before encoding)
+    seasonal_color_grade: Optional[str] = None  # winter, spring, summer, autumn (None = disabled)
+    color_grade_strength: float = 0.7  # How strongly to apply the grade (0.0-1.0)
+
+    # YouTube Upload (optional final step after encoding)
+    enable_youtube_upload: bool = False  # Upload finished video to YouTube
+    youtube_client_secrets: Optional[Path] = None  # OAuth client_secrets.json path
+    youtube_privacy: str = "private"  # public, unlisted, private
+    youtube_title: Optional[str] = None  # Video title (None = auto from filename)
+    youtube_description: str = ""  # Video description
+    youtube_tags: List[str] = field(default_factory=lambda: ["restoration", "framewright"])
+    youtube_playlist_id: Optional[str] = None  # Optional playlist to add to
+
+    # EDL Support
+    edl_input_path: Optional[Path] = None  # Import restoration settings from EDL
+    edl_output_path: Optional[Path] = None  # Export EDL with restoration metadata
+
+    # Natural Language Interface
+    natural_language_mode: bool = False  # Enable NLP command parsing
+    nlp_preserve_authenticity: bool = True  # Default authenticity for NLP commands
+
+    # ==================== v2.1 MODULAR FEATURES ====================
+
+    # Scene-Aware Processing (uses SceneIntelligence for adaptive processing)
+    enable_scene_aware: bool = False  # Per-scene intensity adjustment
+    scene_aware_intensity_scale: float = 1.0  # Global intensity multiplier
+    scene_aware_preserve_faces: bool = True  # Lighter processing for faces
+    scene_aware_preserve_text: bool = True  # Preserve text sharpness
+
+    # Motion-Adaptive Denoising
+    enable_motion_adaptive: bool = False  # Modulate denoise by motion level
+    motion_adaptive_sensitivity: float = 0.5  # Motion detection sensitivity
+
+    # Audio-Visual Sync Repair
+    enable_av_sync_repair: bool = False  # Detect and fix A/V drift
+    av_sync_max_drift_ms: float = 500.0  # Maximum drift to correct
+
+    # HDR Expansion
+    enable_hdr_expansion: bool = False  # SDR to HDR conversion
+    hdr_target_format: str = "hdr10"  # hdr10, hdr10plus, dolby_vision, hlg
+    hdr_peak_brightness: int = 1000  # Target peak brightness (nits)
+
+    # Aspect Ratio Correction
+    enable_aspect_correction: bool = False  # Fix stretched/squeezed video
+    aspect_target_ratio: Optional[str] = None  # Target ratio (e.g., "16:9", "4:3", "auto")
+    aspect_crop_letterbox: bool = True  # Auto-detect and crop letterboxing
+
+    # IVTC (Inverse Telecine)
+    enable_ivtc: bool = False  # Remove telecine pulldown
+    ivtc_pattern: str = "auto"  # auto, 3:2, 2:3, 2:2
+
+    # Perceptual Tuning
+    enable_perceptual_tuning: bool = False  # Balance faithful vs enhanced
+    perceptual_mode: str = "balanced"  # faithful, balanced, enhanced
+    perceptual_balance: float = 0.5  # 0.0 = faithful, 1.0 = enhanced
+
+    # Sidecar Metadata Export
+    enable_sidecar: bool = False  # Export JSON sidecar with settings/metrics
+
+    # Notifications (Email/SMS)
+    enable_notifications: bool = False  # Enable email/SMS notifications
+    notification_config_path: Optional[Path] = None  # Path to notification config
+
+    # Daemon Mode
+    enable_daemon: bool = False  # Run as background daemon
+    daemon_auto_resume: bool = True  # Resume crashed jobs
+
+    # Scheduled Processing
+    enable_scheduling: bool = False  # Enable scheduled job processing
+    scheduler_config_path: Optional[Path] = None  # Path to scheduler config
+
+    # Media Library Integration
+    enable_library_integration: bool = False  # Auto-add to Plex/Jellyfin
+    library_server_type: str = "plex"  # plex, jellyfin, emby
+    library_server_url: Optional[str] = None
+    library_api_token: Optional[str] = None
+
+    # Proxy Workflow
+    enable_proxy_workflow: bool = False  # Use proxy for tuning
+
+    # Quality Tracking
+    enable_quality_tracking: bool = False  # Track PSNR/SSIM trends
+
+    # ==================== PREPROCESSING FIXES ====================
+
+    # Interlace Detection and Deinterlacing
+    enable_interlace_fix: bool = False  # Detect and fix interlaced content
+    interlace_method: str = "auto"  # auto, yadif, bwdif, nnedi
+
+    # Letterbox/Black Bar Cropping
+    enable_letterbox_crop: bool = False  # Detect and crop black bars
+
+    # Film Color Fading Correction
+    enable_film_color_correction: bool = False  # Detect and correct color fading
+    film_stock_override: Optional[str] = None  # Manual: kodachrome, ektachrome, etc.
+
+    # Audio Sync Drift Fixing
+    enable_audio_sync_fix: bool = False  # Detect and fix A/V sync drift
+    audio_sync_method: str = "resample"  # resample, pts_adjust
 
     # Auto-generated paths
     temp_dir: Path = field(init=False)
@@ -338,6 +743,16 @@ class Config:
         if not 0.0 <= self.colorization_strength <= 1.0:
             raise ValueError("colorization_strength must be between 0.0 and 1.0")
 
+        # Validate reference enhancement options
+        if self.reference_images_dir is not None and not isinstance(self.reference_images_dir, Path):
+            self.reference_images_dir = Path(self.reference_images_dir)
+        if not 0.0 <= self.reference_strength <= 1.0:
+            raise ValueError("reference_strength must be between 0.0 and 1.0")
+        if self.reference_guidance_scale < 0:
+            raise ValueError("reference_guidance_scale must be non-negative")
+        if not 0.0 <= self.reference_ip_adapter_scale <= 1.0:
+            raise ValueError("reference_ip_adapter_scale must be between 0.0 and 1.0")
+
         # Validate watermark options
         if self.watermark_mask_path is not None:
             if not self.watermark_mask_path.exists():
@@ -365,6 +780,71 @@ class Config:
                 f"Valid engines: {valid_ocr_engines}"
             )
 
+        # Validate TAP denoising options
+        valid_tap_models = ["restormer", "nafnet", "tap"]
+        if self.tap_model not in valid_tap_models:
+            raise ValueError(
+                f"Invalid TAP model '{self.tap_model}'. "
+                f"Valid models: {valid_tap_models}"
+            )
+        if not 0.0 <= self.tap_strength <= 1.0:
+            raise ValueError("tap_strength must be between 0.0 and 1.0")
+
+        # Validate SR model options
+        valid_sr_models = ["realesrgan", "diffusion", "basicvsr"]
+        if self.sr_model not in valid_sr_models:
+            raise ValueError(
+                f"Invalid SR model '{self.sr_model}'. "
+                f"Valid models: {valid_sr_models}"
+            )
+        if self.diffusion_steps < 1:
+            raise ValueError("diffusion_steps must be at least 1")
+        if self.diffusion_guidance < 0:
+            raise ValueError("diffusion_guidance must be non-negative")
+
+        # Validate face model options
+        valid_face_models = ["gfpgan", "codeformer", "aesrgan"]
+        if self.face_model not in valid_face_models:
+            raise ValueError(
+                f"Invalid face model '{self.face_model}'. "
+                f"Valid models: {valid_face_models}"
+            )
+        if not 0.0 <= self.aesrgan_strength <= 1.0:
+            raise ValueError("aesrgan_strength must be between 0.0 and 1.0")
+
+        # Validate QP artifact removal options
+        if not 0.1 <= self.qp_strength <= 3.0:
+            raise ValueError("qp_strength must be between 0.1 and 3.0")
+
+        # Validate frame generation options
+        valid_frame_gen_models = ["svd", "optical_flow_warp", "interpolate_blend"]
+        if self.frame_gen_model not in valid_frame_gen_models:
+            raise ValueError(
+                f"Invalid frame generation model '{self.frame_gen_model}'. "
+                f"Valid models: {valid_frame_gen_models}"
+            )
+        if self.max_gap_frames < 1:
+            raise ValueError("max_gap_frames must be at least 1")
+
+        # Validate temporal consistency options
+        valid_temporal_methods = ["optical_flow", "cross_attention", "hybrid"]
+        if self.temporal_method not in valid_temporal_methods:
+            raise ValueError(
+                f"Invalid temporal method '{self.temporal_method}'. "
+                f"Valid methods: {valid_temporal_methods}"
+            )
+        if self.cross_attention_window < 1:
+            raise ValueError("cross_attention_window must be at least 1")
+        if not 0.0 <= self.temporal_blend_strength <= 1.0:
+            raise ValueError("temporal_blend_strength must be between 0.0 and 1.0")
+
+        # Convert colorization reference images to Path objects
+        if self.colorization_reference_images:
+            self.colorization_reference_images = [
+                Path(p) if not isinstance(p, Path) else p
+                for p in self.colorization_reference_images
+            ]
+
         # Convert output_dir to Path if provided
         if self.output_dir is not None and not isinstance(self.output_dir, Path):
             self.output_dir = Path(self.output_dir)
@@ -372,6 +852,105 @@ class Config:
         # Convert model_download_dir to Path if provided
         if self.model_download_dir is not None and not isinstance(self.model_download_dir, Path):
             self.model_download_dir = Path(self.model_download_dir)
+
+        # Validate v2.1 modular feature options
+        if not 0.0 <= self.scene_aware_intensity_scale <= 2.0:
+            raise ValueError("scene_aware_intensity_scale must be between 0.0 and 2.0")
+
+        if not 0.0 <= self.motion_adaptive_sensitivity <= 1.0:
+            raise ValueError("motion_adaptive_sensitivity must be between 0.0 and 1.0")
+
+        if self.av_sync_max_drift_ms < 0:
+            raise ValueError("av_sync_max_drift_ms must be non-negative")
+
+        valid_hdr_formats = ["hdr10", "hdr10plus", "dolby_vision", "hlg"]
+        if self.hdr_target_format not in valid_hdr_formats:
+            raise ValueError(
+                f"Invalid HDR format '{self.hdr_target_format}'. "
+                f"Valid formats: {valid_hdr_formats}"
+            )
+
+        if self.hdr_peak_brightness < 100 or self.hdr_peak_brightness > 10000:
+            raise ValueError("hdr_peak_brightness must be between 100 and 10000 nits")
+
+        valid_ivtc_patterns = ["auto", "3:2", "2:3", "2:2", "mixed"]
+        if self.ivtc_pattern not in valid_ivtc_patterns:
+            raise ValueError(
+                f"Invalid IVTC pattern '{self.ivtc_pattern}'. "
+                f"Valid patterns: {valid_ivtc_patterns}"
+            )
+
+        valid_perceptual_modes = ["faithful", "balanced", "enhanced"]
+        if self.perceptual_mode not in valid_perceptual_modes:
+            raise ValueError(
+                f"Invalid perceptual mode '{self.perceptual_mode}'. "
+                f"Valid modes: {valid_perceptual_modes}"
+            )
+
+        if not 0.0 <= self.perceptual_balance <= 1.0:
+            raise ValueError("perceptual_balance must be between 0.0 and 1.0")
+
+        valid_library_types = ["plex", "jellyfin", "emby"]
+        if self.library_server_type not in valid_library_types:
+            raise ValueError(
+                f"Invalid library server type '{self.library_server_type}'. "
+                f"Valid types: {valid_library_types}"
+            )
+
+        # Validate seasonal color grading
+        valid_seasons = [None, "winter", "spring", "summer", "autumn"]
+        if self.seasonal_color_grade not in valid_seasons:
+            raise ValueError(
+                f"Invalid seasonal_color_grade '{self.seasonal_color_grade}'. "
+                f"Valid options: {[s for s in valid_seasons if s]}"
+            )
+        if not 0.0 <= self.color_grade_strength <= 1.0:
+            raise ValueError("color_grade_strength must be between 0.0 and 1.0")
+
+        # Validate YouTube upload options
+        valid_yt_privacy = ["public", "unlisted", "private"]
+        if self.youtube_privacy not in valid_yt_privacy:
+            raise ValueError(
+                f"Invalid youtube_privacy '{self.youtube_privacy}'. "
+                f"Valid options: {valid_yt_privacy}"
+            )
+        if self.youtube_client_secrets is not None and not isinstance(self.youtube_client_secrets, Path):
+            self.youtube_client_secrets = Path(self.youtube_client_secrets)
+
+        # Validate preprocessing fix options
+        valid_interlace_methods = ["auto", "yadif", "bwdif", "nnedi"]
+        if self.interlace_method not in valid_interlace_methods:
+            raise ValueError(
+                f"Invalid interlace method '{self.interlace_method}'. "
+                f"Valid methods: {valid_interlace_methods}"
+            )
+
+        valid_film_stocks = [
+            None, "kodachrome", "ektachrome", "kodacolor", "vision",
+            "technicolor_2", "technicolor_3", "technicolor_ib",
+            "agfacolor", "fujifilm", "eastmancolor",
+            "early_color", "classic_color", "modern_color"
+        ]
+        if self.film_stock_override not in valid_film_stocks:
+            raise ValueError(
+                f"Invalid film stock override '{self.film_stock_override}'. "
+                f"Valid stocks: {[s for s in valid_film_stocks if s]}"
+            )
+
+        valid_audio_sync_methods = ["resample", "pts_adjust"]
+        if self.audio_sync_method not in valid_audio_sync_methods:
+            raise ValueError(
+                f"Invalid audio sync method '{self.audio_sync_method}'. "
+                f"Valid methods: {valid_audio_sync_methods}"
+            )
+
+        # Convert notification_config_path to Path if provided
+        if self.notification_config_path is not None and not isinstance(self.notification_config_path, Path):
+            self.notification_config_path = Path(self.notification_config_path)
+
+        # Convert scheduler_config_path to Path if provided
+        if self.scheduler_config_path is not None and not isinstance(self.scheduler_config_path, Path):
+            self.scheduler_config_path = Path(self.scheduler_config_path)
 
     def get_output_dir(self) -> Path:
         """Get the effective output directory.
@@ -538,8 +1117,25 @@ class Config:
             'auto_defect_repair', 'auto_face_restore', 'scratch_sensitivity',
             'dust_sensitivity', 'grain_reduction', 'model_download_dir', 'model_dir',
             'enable_colorization', 'colorization_model', 'colorization_strength',
+            'enable_reference_enhance', 'reference_images_dir', 'reference_strength',
+            'reference_guidance_scale', 'reference_ip_adapter_scale',
             'enable_watermark_removal', 'watermark_mask_path', 'watermark_auto_detect',
-            'enable_subtitle_removal', 'subtitle_region', 'subtitle_ocr_engine', 'subtitle_languages'
+            'enable_subtitle_removal', 'subtitle_region', 'subtitle_ocr_engine', 'subtitle_languages',
+            # v2.1 modular features
+            'enable_scene_aware', 'scene_aware_intensity_scale', 'scene_aware_preserve_faces',
+            'scene_aware_preserve_text', 'enable_motion_adaptive', 'motion_adaptive_sensitivity',
+            'enable_av_sync_repair', 'av_sync_max_drift_ms', 'enable_hdr_expansion',
+            'hdr_target_format', 'hdr_peak_brightness', 'enable_aspect_correction',
+            'aspect_target_ratio', 'aspect_crop_letterbox', 'enable_ivtc', 'ivtc_pattern',
+            'enable_perceptual_tuning', 'perceptual_mode', 'perceptual_balance',
+            'enable_sidecar', 'enable_notifications', 'notification_config_path',
+            'enable_daemon', 'daemon_auto_resume', 'enable_scheduling', 'scheduler_config_path',
+            'enable_library_integration', 'library_server_type', 'library_server_url',
+            'library_api_token', 'enable_proxy_workflow', 'enable_quality_tracking',
+            # Preprocessing fixes
+            'enable_interlace_fix', 'interlace_method', 'enable_letterbox_crop',
+            'enable_film_color_correction', 'film_stock_override',
+            'enable_audio_sync_fix', 'audio_sync_method'
         ]:
             val = getattr(self, key)
             if isinstance(val, Path):
@@ -576,9 +1172,21 @@ class Config:
         if 'model_dir' in data and isinstance(data['model_dir'], str):
             data['model_dir'] = Path(data['model_dir'])
 
+        # Convert reference_images_dir to Path if provided
+        if 'reference_images_dir' in data and isinstance(data['reference_images_dir'], str):
+            data['reference_images_dir'] = Path(data['reference_images_dir'])
+
         # Convert watermark_mask_path to Path if provided
         if 'watermark_mask_path' in data and isinstance(data['watermark_mask_path'], str):
             data['watermark_mask_path'] = Path(data['watermark_mask_path'])
+
+        # Convert notification_config_path to Path if provided
+        if 'notification_config_path' in data and isinstance(data['notification_config_path'], str):
+            data['notification_config_path'] = Path(data['notification_config_path'])
+
+        # Convert scheduler_config_path to Path if provided
+        if 'scheduler_config_path' in data and isinstance(data['scheduler_config_path'], str):
+            data['scheduler_config_path'] = Path(data['scheduler_config_path'])
 
         # Filter to only valid init parameters
         valid_keys = {
@@ -594,9 +1202,26 @@ class Config:
             'auto_defect_repair', 'auto_face_restore', 'scratch_sensitivity',
             'dust_sensitivity', 'grain_reduction', 'model_download_dir', 'model_dir',
             'enable_colorization', 'colorization_model', 'colorization_strength',
+            'enable_reference_enhance', 'reference_images_dir', 'reference_strength',
+            'reference_guidance_scale', 'reference_ip_adapter_scale',
             'enable_watermark_removal', 'watermark_mask_path', 'watermark_auto_detect',
             'enable_subtitle_removal', 'subtitle_region', 'subtitle_ocr_engine', 'subtitle_languages',
-            '_output_dir_override', '_frames_dir_override', '_enhanced_dir_override'
+            '_output_dir_override', '_frames_dir_override', '_enhanced_dir_override',
+            # v2.1 modular features
+            'enable_scene_aware', 'scene_aware_intensity_scale', 'scene_aware_preserve_faces',
+            'scene_aware_preserve_text', 'enable_motion_adaptive', 'motion_adaptive_sensitivity',
+            'enable_av_sync_repair', 'av_sync_max_drift_ms', 'enable_hdr_expansion',
+            'hdr_target_format', 'hdr_peak_brightness', 'enable_aspect_correction',
+            'aspect_target_ratio', 'aspect_crop_letterbox', 'enable_ivtc', 'ivtc_pattern',
+            'enable_perceptual_tuning', 'perceptual_mode', 'perceptual_balance',
+            'enable_sidecar', 'enable_notifications', 'notification_config_path',
+            'enable_daemon', 'daemon_auto_resume', 'enable_scheduling', 'scheduler_config_path',
+            'enable_library_integration', 'library_server_type', 'library_server_url',
+            'library_api_token', 'enable_proxy_workflow', 'enable_quality_tracking',
+            # Preprocessing fixes
+            'enable_interlace_fix', 'interlace_method', 'enable_letterbox_crop',
+            'enable_film_color_correction', 'film_stock_override',
+            'enable_audio_sync_fix', 'audio_sync_method'
         }
 
         filtered_data = {k: v for k, v in data.items() if k in valid_keys}
@@ -654,9 +1279,12 @@ class Config:
         descriptions = {
             "fast": "Quick processing with 2x upscale, minimal quality checks",
             "quality": "High quality 4x upscale with validation enabled",
-            "archive": "Archival quality with maximum quality settings",
+            "archive": "Archival quality with frame generation and old film features",
             "anime": "Optimized for anime/animation content",
             "film_restoration": "Full restoration for old films with defect repair",
+            "ultimate": "Maximum quality for RTX 5090/high-end hardware (32GB+ VRAM)",
+            "authentic": "Preserve period character - ideal for historic footage",
+            "vhs": "VHS/analog tape restoration with tracking and dropout repair",
         }
         return descriptions
 

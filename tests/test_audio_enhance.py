@@ -222,10 +222,10 @@ class TestTraditionalAudioEnhancer:
 
         assert enhancer is not None
 
-    @patch('shutil.which')
-    def test_init_without_ffmpeg(self, mock_which):
+    @patch('framewright.processors.audio_enhance.get_ffmpeg_path')
+    def test_init_without_ffmpeg(self, mock_get_ffmpeg):
         """Test initialization fails without FFmpeg."""
-        mock_which.return_value = None
+        mock_get_ffmpeg.side_effect = FileNotFoundError("FFmpeg is not installed")
 
         with pytest.raises(AudioEnhanceError) as exc_info:
             TraditionalAudioEnhancer()
@@ -345,11 +345,10 @@ class TestTraditionalAudioEnhancer:
 
         assert "Input file does not exist" in str(exc_info.value)
 
-    @patch('shutil.which')
+    @patch('framewright.processors.audio_enhance.get_ffmpeg_path', return_value='/usr/bin/ffmpeg')
     @patch('subprocess.run')
-    def test_enhance_full_pipeline(self, mock_run, mock_which, temp_dir, audio_file):
+    def test_enhance_full_pipeline(self, mock_run, mock_get_ffmpeg, temp_dir, audio_file):
         """Test full enhancement pipeline."""
-        mock_which.return_value = '/usr/bin/ffmpeg'
         mock_run.return_value = Mock(stdout="afftdn loudnorm", returncode=0)
 
         enhancer = TraditionalAudioEnhancer()
@@ -363,12 +362,14 @@ class TestTraditionalAudioEnhancer:
             target_loudness=-14.0
         )
 
-        with patch('subprocess.Popen') as mock_popen:
-            process_mock = MagicMock()
-            process_mock.stderr = iter(["Done"])
-            process_mock.wait.return_value = 0
-            mock_popen.return_value = process_mock
+        def mock_run_ffmpeg(command, progress_callback=None):
+            # Create the output file so next stage can find it
+            output_file = command[-1]
+            Path(output_file).parent.mkdir(parents=True, exist_ok=True)
+            Path(output_file).write_text("mock audio")
+            return Mock(returncode=0, stdout="", stderr="")
 
+        with patch.object(enhancer, '_run_ffmpeg', side_effect=mock_run_ffmpeg):
             output_path = str(temp_dir / "output.wav")
             result = enhancer.enhance_full_pipeline(
                 str(audio_file),
@@ -489,10 +490,10 @@ class TestAudioAnalyzer:
 
         assert analyzer is not None
 
-    @patch('shutil.which')
-    def test_init_without_ffmpeg(self, mock_which):
+    @patch('framewright.processors.audio_enhance.get_ffmpeg_path')
+    def test_init_without_ffmpeg(self, mock_get_ffmpeg):
         """Test analyzer initialization fails without FFmpeg."""
-        mock_which.return_value = None
+        mock_get_ffmpeg.side_effect = FileNotFoundError("FFmpeg not found")
 
         with pytest.raises(AudioEnhanceError) as exc_info:
             AudioAnalyzer()
@@ -512,11 +513,11 @@ class TestAudioAnalyzer:
 
         assert "File not found" in str(exc_info.value)
 
-    @patch('shutil.which')
+    @patch('framewright.processors.audio_enhance.get_ffprobe_path', return_value='/usr/bin/ffprobe')
+    @patch('framewright.processors.audio_enhance.get_ffmpeg_path', return_value='/usr/bin/ffmpeg')
     @patch('subprocess.run')
-    def test_analyze_success(self, mock_run, mock_which, audio_file):
+    def test_analyze_success(self, mock_run, mock_get_ffmpeg, mock_get_ffprobe, audio_file):
         """Test successful audio analysis."""
-        mock_which.return_value = '/usr/bin/ffmpeg'
 
         # Mock ffprobe output
         ffprobe_output = json.dumps({
@@ -534,7 +535,7 @@ class TestAudioAnalyzer:
         def run_side_effect(*args, **kwargs):
             cmd = args[0] if args else kwargs.get('args', [])
 
-            if 'ffprobe' in cmd:
+            if 'ffprobe' in str(cmd):
                 return Mock(returncode=0, stdout=ffprobe_output, stderr="")
             elif 'loudnorm' in str(cmd):
                 # Mock loudnorm output

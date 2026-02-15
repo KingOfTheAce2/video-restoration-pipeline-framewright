@@ -176,7 +176,18 @@ class TestCheckRealesrgan:
         """Test when Real-ESRGAN is not found."""
         mock_which.return_value = None
 
-        info = check_realesrgan()
+        # Mock Path.exists to return False for custom install locations
+        with patch('framewright.utils.dependencies.Path.exists', return_value=False):
+            # Mock the Python package import fallback
+            import importlib
+            def mock_import_fail(name, *args, **kwargs):
+                if name in ('torch', 'realesrgan', 'basicsr', 'basicsr.archs.rrdbnet_arch'):
+                    raise ImportError(f"No module named '{name}'")
+                return original_import(name, *args, **kwargs)
+            import builtins
+            original_import = builtins.__import__
+            with patch('builtins.__import__', side_effect=mock_import_fail):
+                info = check_realesrgan()
 
         assert info.installed is False
 
