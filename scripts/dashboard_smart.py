@@ -758,7 +758,10 @@ def _update_job(job_id, **kwargs):
             log_line = kwargs.pop("log_line", None)
             JOBS[job_id].update(kwargs)
             if log_line:
-                JOBS[job_id]["log"].append(log_line)
+                # Add timestamp to log line for progress tracking
+                timestamp = datetime.now().strftime("%H:%M:%S")
+                timestamped_line = f"[{timestamp}] {log_line}"
+                JOBS[job_id]["log"].append(timestamped_line)
                 if len(JOBS[job_id]["log"]) > 200:
                     JOBS[job_id]["log"] = JOBS[job_id]["log"][-200:]
 
