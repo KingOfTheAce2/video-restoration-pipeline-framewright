@@ -92,7 +92,7 @@ class EnsembleConfig:
         gpu_id: GPU device ID
         half_precision: Use FP16 for reduced VRAM
     """
-    models: List[str] = field(default_factory=lambda: ["hat", "realesrgan"])
+    models: List[str] = field(default_factory=lambda: ["realesrgan"])  # HAT has download issues, using Real-ESRGAN
     voting_method: VotingMethod = VotingMethod.WEIGHTED
     model_weights: Optional[Dict[str, float]] = None
     quality_metric: str = "ssim"
