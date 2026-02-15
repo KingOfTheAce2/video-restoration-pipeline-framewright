@@ -1179,37 +1179,49 @@ def run_job(job_id):
                 _update_job(job_id, log_line=f"Colorization failed: {e}, continuing without colorization")
         stages_done.append("colorize")
 
-        # ---- STEP 2: Upscale frames ----
-        # Clear previous enhanced frames for clean re-run
-        for f in enhanced_dir.glob("*.png"):
-            f.unlink()
+        # ---- STEP 2: Upscale frames with checkpoint/resume support ----
+        # Check for existing enhanced frames (allows resuming after crashes)
+        existing_enhanced = list(enhanced_dir.glob("*.png"))
+        source_frames = list(frames_dir.glob("*.png"))
 
-        cmd_enhance = ["python", "-m", "framewright.cli", "enhance-frames",
-                       "--input", str(frames_dir), "--output", str(enhanced_dir),
-                       "--scale", scale]
-        sr_model_map = {
-            "realesrgan": "realesrgan-x4plus",
-            "hat": "hat",
-            "ensemble": "ensemble",
-            "diffusion": "diffusion",
-        }
-        sr_model = enh.get("sr_model", "realesrgan")
-        model_name = sr_model_map.get(sr_model, "realesrgan-x4plus")
-        cmd_enhance.extend(["--model", model_name])
+        if len(existing_enhanced) >= len(source_frames) and len(existing_enhanced) > 0:
+            # All frames already upscaled - skip this step
+            _update_job(job_id, stage="upscale", stage_label="AI upscaling already complete",
+                        stages_done=list(stages_done), progress=60,
+                        elapsed_sec=round(time.time() - start_time),
+                        log_line=f"✓ Found {len(existing_enhanced)} enhanced frames - skipping upscale")
+            stages_done.append("upscale")
+        else:
+            # Need to upscale (either from scratch or resume partial progress)
+            if len(existing_enhanced) > 0:
+                _update_job(job_id, log_line=f"Found {len(existing_enhanced)}/{len(source_frames)} enhanced frames - will resume")
 
-        # Add per-model arguments
-        if sr_model == "hat":
-            cmd_enhance.extend(["--hat-size", "large"])
-        elif sr_model == "diffusion":
-            cmd_enhance.extend(["--diffusion-steps", "20", "--diffusion-model", "upscale_a_video"])
-        elif sr_model == "ensemble":
-            cmd_enhance.extend(["--ensemble-models", "hat,realesrgan", "--ensemble-method", "weighted"])
+            cmd_enhance = ["python", "-m", "framewright.cli", "enhance-frames",
+                           "--input", str(frames_dir), "--output", str(enhanced_dir),
+                           "--scale", scale]
+            sr_model_map = {
+                "realesrgan": "realesrgan-x4plus",
+                "hat": "hat",
+                "ensemble": "ensemble",
+                "diffusion": "diffusion",
+            }
+            sr_model = enh.get("sr_model", "realesrgan")
+            model_name = sr_model_map.get(sr_model, "realesrgan-x4plus")
+            cmd_enhance.extend(["--model", model_name])
 
-        rc, _ = _run_step(job_id, cmd_enhance, "upscale", "AI Upscaling",
-                          start_time, stages_done, progress_base=20, progress_span=40)
-        if rc != 0:
-            raise Exception(f"Enhancement failed (exit code {rc})")
-        stages_done.append("upscale")
+            # Add per-model arguments
+            if sr_model == "hat":
+                cmd_enhance.extend(["--hat-size", "large"])
+            elif sr_model == "diffusion":
+                cmd_enhance.extend(["--diffusion-steps", "20", "--diffusion-model", "upscale_a_video"])
+            elif sr_model == "ensemble":
+                cmd_enhance.extend(["--ensemble-models", "hat,realesrgan", "--ensemble-method", "weighted"])
+
+            rc, _ = _run_step(job_id, cmd_enhance, "upscale", "AI Upscaling",
+                              start_time, stages_done, progress_base=20, progress_span=40)
+            if rc != 0:
+                raise Exception(f"Enhancement failed (exit code {rc})")
+            stages_done.append("upscale")
 
         # ---- STEP 2.5: Reference-guided enhancement (if references provided) ----
         ref_dir = job.get("ref_dir", "")
