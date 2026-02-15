@@ -164,7 +164,7 @@ class ModelProcessor:
                 self._processor = VRTProcessor(config)
             elif self.model_name == "realesrgan":
                 from .pytorch_realesrgan import get_upsampler, PyTorchESRGANConfig, enhance_frame_pytorch
-                config = PyTorchESRGANConfig(model_name="realesrgan-x4plus", gpu_id=self.gpu_id)
+                config = PyTorchESRGANConfig(model_name="RealESRGAN_x4plus", gpu_id=self.gpu_id)
                 # Store the config and functions for later use
                 self._esrgan_config = config
                 self._esrgan_upsampler = None  # Lazy load
