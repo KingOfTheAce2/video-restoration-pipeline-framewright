@@ -2212,13 +2212,13 @@ function selectProfile(key) {
     enhancements.stabilize = 'off';         // Old film tripod shots, usually no shake
     enhancements.output_format = 'mp4';     // MP4 for best compatibility
     // Advanced settings — best models
-    enhancements.sr_model = 'realesrgan';   // Best general upscaler
+    enhancements.sr_model = 'ensemble';     // Ensemble SR for maximum quality (HAT + Real-ESRGAN)
     enhancements.face_model = 'gfpgan';     // Most aggressive face restore for tiny/blurry faces
     enhancements.ref_strength = 'heavy';    // Max detail from reference photos
-    enhancements.temporal_method = 'optical_flow'; // Prevent AI flickering between frames
+    enhancements.temporal_method = 'hybrid'; // Hybrid (RAFT + Attention) for best temporal consistency
     enhancements.scratch_repair = 'full';   // Full scratch/damage repair
     enhancements.grain_preserve = 'off';    // Remove grain — we want clean detail, not film texture
-    enhancements.perceptual = 'faithful';   // Stay true to the original look
+    enhancements.perceptual = 'balanced';   // Balanced perceptual tuning for best results
     enhancements.crf = '14';                // Near-lossless encoding
     enhancements.encoder = 'h265';          // Best quality/size ratio
     enhancements.letterbox = 'auto';        // Clean up any uneven black bars
